@@ -22,15 +22,21 @@ type Logging struct {
 	Level string `yaml:"level"`
 }
 
+// TLS configures the optional HTTPS listener.
+type TLS struct {
+	Enabled bool   `yaml:"enabled"`
+	Cert    string `yaml:"cert"`
+	Key     string `yaml:"key"`
+}
+
+// Server configures the HTTP(S) listener.
+type Server struct {
+	Listen string `yaml:"listen"`
+	TLS    TLS    `yaml:"tls"`
+}
+
 type Config struct {
-	Server struct {
-		Listen string `yaml:"listen"`
-		TLS    struct {
-			Enabled bool   `yaml:"enabled"`
-			Cert    string `yaml:"cert"`
-			Key     string `yaml:"key"`
-		} `yaml:"tls"`
-	} `yaml:"server"`
+	Server Server `yaml:"server"`
 
 	// Webhook holds the secrets used to verify step-ca's signed webhook requests
 	// (X-Smallstep-Signature). step-ca generates a distinct secret per webhook,
