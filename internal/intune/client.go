@@ -27,8 +27,10 @@ var ErrRejected = errors.New("intune: validation rejected")
 // server goroutines under load.
 const intuneHTTPTimeout = 15 * time.Second
 
-// tokenSource provides OAuth2 bearer tokens for a given scope.
-type tokenSource interface {
+// tokenSource provides OAuth2 bearer tokens for a given scope. The name mirrors
+// the standard library's oauth2.TokenSource, which is the idiomatic name for this
+// abstraction, so the -er-suffix convention (sonar godre:S8196) does not apply.
+type tokenSource interface { //nosonar S8196 -- mirrors stdlib oauth2.TokenSource
 	Token(ctx context.Context, scope string) (string, error)
 }
 
