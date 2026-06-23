@@ -1,5 +1,8 @@
 # scep-intune
 
+[![GitHub release](https://img.shields.io/github/release/smallstep/certificates.svg)](https://github.com/smallstep/certificates/releases/latest)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 A small, stateless webhook bridge that lets a **vanilla
 [step-ca](https://github.com/smallstep/certificates)** issue certificates to
 **Microsoft Intune**-managed devices over SCEP.

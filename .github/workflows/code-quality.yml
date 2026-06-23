@@ -1,0 +1,72 @@
+name: code-quality
+
+# CI-based SonarCloud analysis + Codecov coverage upload, sharing a single test
+# pass. The SonarCloud half REPLACES SonarCloud's Automatic Analysis: disable it
+# under Project > Administration > Analysis Method, or this scan is rejected (the
+# two modes are mutually exclusive). The CI scan imports the Go coverage profile
+# produced by the test step, which Automatic Analysis cannot do.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  sonar:
+    name: sonar
+    runs-on: ubuntu-latest
+    # The scanner reads the token from SONAR_TOKEN; pass it via the environment rather
+    # than expanding the secret inside a run block, where it can leak (githubactions:S7636).
+    env:
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+      SONAR_HOST_URL: https://sonarcloud.io
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0  # Sonar needs full history for new-code detection and blame
+
+      - name: Setup Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version-file: go.mod  # keep the toolchain in sync with the module
+
+      - name: Build
+        run: go build ./...
+
+      # A single test pass emits Go's native coverage profile, which is the format
+      # both consumers want: SonarCloud imports it via sonar.go.coverage.reportPaths
+      # (set in the scan step below) and Codecov ingests it directly. atomic mode
+      # keeps counts correct under the parallel test execution `go test` uses.
+      - name: Test with coverage
+        run: go test -covermode=atomic -coverprofile=coverage.out ./...
+
+      # Upload the coverage profile to Codecov. Push-only to avoid touching fork PRs,
+      # where the token is unavailable. Runs before the Sonar scan so a Codecov hiccup
+      # is independent of the Sonar import.
+      - name: Upload coverage
+        if: github.event_name == 'push'
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
+        with:
+          files: ./coverage.out
+          fail_ci_if_error: true
+          verbose: true
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+
+      # The Go analyzer is built into the generic SonarScanner CLI, so no separate
+      # language plugin or JVM toolchain is needed beyond what the action bundles.
+      - name: SonarCloud scan
+        uses: SonarSource/sonarqube-scan-action@713881670b6b3676cda39549040e2d88c70d582e # v8.2.0
+        with:
+          args: >
+            -Dsonar.projectKey=KerckhoffsLabs_scep-intune
+            -Dsonar.organization=kerckhoffslabs
+            -Dsonar.go.coverage.reportPaths=coverage.out
+            -Dsonar.sources=.
+            -Dsonar.tests=.
+            -Dsonar.test.inclusions=**/*_test.go
+            -Dsonar.exclusions=**/*_test.go
