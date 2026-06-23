@@ -88,7 +88,7 @@ func TestValidateRejectedDenies(t *testing.T) {
 		t.Fatalf("code = %d, want 200 with allow=false", rec.Code)
 	}
 	var resp response
-	json.Unmarshal(rec.Body.Bytes(), &resp)
+	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
 	if resp.Allow {
 		t.Error("allow = true, want false on rejection")
 	}

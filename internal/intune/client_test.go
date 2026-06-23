@@ -22,7 +22,7 @@ func newTestServer(t *testing.T, validateCode string) (*httptest.Server, *[]byte
 	mux := http.NewServeMux()
 	var srv *httptest.Server
 	mux.HandleFunc("/v1.0/servicePrincipals/", func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(discoveryResponse{Value: []endpoint{
+		_ = json.NewEncoder(w).Encode(discoveryResponse{Value: []endpoint{
 			{ProviderName: "Other", URI: "https://wrong"},
 			{ProviderName: validationServiceName, URI: srv.URL},
 		}})
@@ -32,7 +32,7 @@ func newTestServer(t *testing.T, validateCode string) (*httptest.Server, *[]byte
 		if r.Header.Get("Api-Version") != apiVersion {
 			t.Errorf("Api-Version = %q", r.Header.Get("Api-Version"))
 		}
-		json.NewEncoder(w).Encode(codeResponse{Code: validateCode})
+		_ = json.NewEncoder(w).Encode(codeResponse{Code: validateCode})
 	})
 	mux.HandleFunc("/"+pathNotifySuccess, func(w http.ResponseWriter, r *http.Request) {
 		lastBody, _ = io.ReadAll(r.Body)
@@ -112,7 +112,7 @@ func TestNotifyFailureNon200(t *testing.T) {
 	mux := http.NewServeMux()
 	var srv *httptest.Server
 	mux.HandleFunc("/v1.0/servicePrincipals/", func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(discoveryResponse{Value: []endpoint{
+		_ = json.NewEncoder(w).Encode(discoveryResponse{Value: []endpoint{
 			{ProviderName: validationServiceName, URI: srv.URL},
 		}})
 	})
@@ -133,7 +133,7 @@ func TestValidateTransientHTTPError(t *testing.T) {
 	mux := http.NewServeMux()
 	var srv *httptest.Server
 	mux.HandleFunc("/v1.0/servicePrincipals/", func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(discoveryResponse{Value: []endpoint{
+		_ = json.NewEncoder(w).Encode(discoveryResponse{Value: []endpoint{
 			{ProviderName: validationServiceName, URI: srv.URL},
 		}})
 	})

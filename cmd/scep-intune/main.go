@@ -38,7 +38,7 @@ func main() {
 		os.Exit(1)
 	}
 	if logCloser != nil {
-		defer logCloser.Close()
+		defer func() { _ = logCloser.Close() }()
 	}
 	log = logger
 
