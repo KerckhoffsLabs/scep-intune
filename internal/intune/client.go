@@ -76,7 +76,7 @@ func (c *Client) discover(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= 400 {
 		return "", fmt.Errorf("intune: discovery returned HTTP %d", resp.StatusCode)
 	}
@@ -127,7 +127,7 @@ func (c *Client) post(ctx context.Context, path string, payload any) ([]byte, in
 	if err != nil {
 		return nil, 0, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	rb, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, resp.StatusCode, err
