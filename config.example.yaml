@@ -1,0 +1,24 @@
+# scep-intune — Microsoft Intune SCEP webhook bridge.
+#
+# Validates step-ca SCEP enrollments against Intune and reports issuance results,
+# via step-ca's SCEPCHALLENGE (-> /validate) and NOTIFYING (-> /notify) webhooks.
+server:
+  listen: ":8080"
+  tls:
+    enabled: false             # set true and provide cert/key to serve HTTPS
+    cert: ""                   #   (step-ca requires the webhook URL to be https;
+    key: ""                    #    alternatively terminate TLS at a proxy)
+webhook:
+  # step-ca generates a distinct secret per webhook (printed by
+  # `step ca provisioner webhook add`), so each endpoint has its own.
+  validate_secret: ""          # base64 SCEPCHALLENGE secret; prefer env SCEP_VALIDATE_SECRET
+  notify_secret: ""            # base64 NOTIFYING secret;     prefer env SCEP_NOTIFY_SECRET
+logging:
+  output: "stdout"             # "stdout", "stderr", or a file path (append/created)
+  format: "json"               # "json" or "text"
+  level: "info"                # "debug", "info", "warn", or "error"
+intune:
+  tenant_id: ""                # or env INTUNE_TENANT_ID
+  client_id: ""                # or env INTUNE_CLIENT_ID
+  client_secret: ""            # prefer env INTUNE_CLIENT_SECRET
+  caller_info: "step-ca-scep"

@@ -1,0 +1,10 @@
+.git
+.gitignore
+.dockerignore
+docs/
+bin/
+dist/
+*.md
+config.example.yaml
+Makefile
+.env

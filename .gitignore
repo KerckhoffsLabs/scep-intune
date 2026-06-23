@@ -1,0 +1,8 @@
+/scep-intune
+/bin/
+/dist/
+*.pem
+*.key
+*.crt
+.env
+
