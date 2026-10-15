@@ -25,12 +25,12 @@ jobs:
       SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
       SONAR_HOST_URL: https://sonarcloud.io
     steps:
-      - uses: actions/checkout@v7.0.0
+      - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0  # Sonar needs full history for new-code detection and blame
 
       - name: Setup Go
-        uses: actions/setup-go@v6.4.0
+        uses: actions/setup-go@v7.0.0
         with:
           go-version-file: go.mod  # keep the toolchain in sync with the module
 
@@ -49,7 +49,7 @@ jobs:
       # is independent of the Sonar import.
       - name: Upload coverage
         if: github.event_name == 'push'
-        uses: codecov/codecov-action@v7.0.0
+        uses: codecov/codecov-action@v7.1.1
         with:
           files: ./coverage.out
           fail_ci_if_error: true
@@ -66,7 +66,7 @@ jobs:
       # flags every tag ref. Ignored for workflow files only: the organization's "Require lockfile"
       # Actions policy blocks any workflow whose dependencies are not in the lockfile.
       - name: SonarCloud scan
-        uses: SonarSource/sonarqube-scan-action@v8.2.0
+        uses: SonarSource/sonarqube-scan-action@v8.3.0
         with:
           args: >
             -Dsonar.projectKey=KerckhoffsLabs_scep-intune
