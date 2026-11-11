@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/url"
 	"os"
+	"regexp"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -56,8 +58,24 @@ type Config struct {
 		ClientID     string `yaml:"client_id"`
 		ClientSecret string `yaml:"client_secret"`
 		CallerInfo   string `yaml:"caller_info"`
+
+		// Microsoft endpoints, mirroring the values Microsoft's reference SCEP
+		// validation library makes configurable. The defaults target the
+		// commercial cloud; override them for another Microsoft cloud or a mock.
+		AuthorityHost string `yaml:"authority_host"` // Entra sign-in host
+		GraphURL      string `yaml:"graph_url"`      // Graph base URL and scope base
+		ResourceURL   string `yaml:"resource_url"`   // Intune token scope base
+		AppID         string `yaml:"app_id"`         // Intune service principal app ID
 	} `yaml:"intune"`
 }
+
+// Default Microsoft endpoints (commercial cloud).
+const (
+	DefaultAuthorityHost = "https://login.microsoftonline.com/"
+	DefaultGraphURL      = "https://graph.microsoft.com/"
+	DefaultResourceURL   = "https://api.manage.microsoft.com/"
+	DefaultAppID         = "0000000a-0000-0000-c000-000000000000"
+)
 
 // Load reads and validates a YAML config file, applying defaults and env
 // overrides for secrets (INTUNE_CLIENT_SECRET, SCEP_VALIDATE_SECRET,
@@ -73,6 +91,7 @@ func Load(path string) (*Config, error) {
 	}
 	cfg.applyDefaults()
 	cfg.applyEnv()
+	cfg.normaliseEndpoints()
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
@@ -95,6 +114,34 @@ func (c *Config) applyDefaults() {
 	if c.Logging.Level == "" {
 		c.Logging.Level = "info"
 	}
+	if c.Intune.AuthorityHost == "" {
+		c.Intune.AuthorityHost = DefaultAuthorityHost
+	}
+	if c.Intune.GraphURL == "" {
+		c.Intune.GraphURL = DefaultGraphURL
+	}
+	if c.Intune.ResourceURL == "" {
+		c.Intune.ResourceURL = DefaultResourceURL
+	}
+	if c.Intune.AppID == "" {
+		c.Intune.AppID = DefaultAppID
+	}
+}
+
+// normaliseEndpoints lower-cases each endpoint URL's scheme and host (both are
+// case-insensitive) and makes it end with exactly one slash, so derived values
+// ("<url>.default", "<url>v1.0/...") and comparisons with the defaults are
+// correct however the URL was written. Values that don't parse as absolute URLs
+// are left for Validate to reject.
+func (c *Config) normaliseEndpoints() {
+	for _, p := range []*string{&c.Intune.AuthorityHost, &c.Intune.GraphURL, &c.Intune.ResourceURL} {
+		if u, err := url.Parse(*p); err == nil && u.Scheme != "" && u.Host != "" {
+			u.Scheme = strings.ToLower(u.Scheme)
+			u.Host = strings.ToLower(u.Host)
+			*p = u.String()
+		}
+		*p = strings.TrimRight(*p, "/") + "/"
+	}
 }
 
 func (c *Config) applyEnv() {
@@ -112,6 +159,18 @@ func (c *Config) applyEnv() {
 	}
 	if v := os.Getenv("SCEP_NOTIFY_SECRET"); v != "" {
 		c.Webhook.NotifySecret = v
+	}
+	if v := os.Getenv("INTUNE_AUTHORITY_HOST"); v != "" {
+		c.Intune.AuthorityHost = v
+	}
+	if v := os.Getenv("INTUNE_GRAPH_URL"); v != "" {
+		c.Intune.GraphURL = v
+	}
+	if v := os.Getenv("INTUNE_RESOURCE_URL"); v != "" {
+		c.Intune.ResourceURL = v
+	}
+	if v := os.Getenv("INTUNE_APP_ID"); v != "" {
+		c.Intune.AppID = v
 	}
 }
 
@@ -144,6 +203,38 @@ func (c *Config) Validate() error {
 	}
 	if len(missing) > 0 {
 		return fmt.Errorf("config: missing required fields: %v", missing)
+	}
+	for _, e := range []struct{ key, env, val string }{
+		{"intune.authority_host", "INTUNE_AUTHORITY_HOST", c.Intune.AuthorityHost},
+		{"intune.graph_url", "INTUNE_GRAPH_URL", c.Intune.GraphURL},
+		{"intune.resource_url", "INTUNE_RESOURCE_URL", c.Intune.ResourceURL},
+	} {
+		if err := checkHTTPSURL(e.key, e.env, e.val); err != nil {
+			return err
+		}
+	}
+	// app_id goes into the discovery URL path; a typo or stray character would
+	// silently query another Graph resource.
+	if !guidPattern.MatchString(c.Intune.AppID) {
+		return fmt.Errorf("config: intune.app_id (env INTUNE_APP_ID) must be a GUID: %q", c.Intune.AppID)
+	}
+	return nil
+}
+
+var guidPattern = regexp.MustCompile(`^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$`)
+
+// checkHTTPSURL reports an error unless val is an absolute https URL with a
+// host and no credentials, query or fragment (scopes and paths are appended to
+// it, and it is logged). The error names both the YAML key and the env var,
+// since either may have set it, and never repeats a password.
+func checkHTTPSURL(key, env, val string) error {
+	u, err := url.Parse(val)
+	if err != nil {
+		return fmt.Errorf("config: %s (env %s) must be an absolute https URL", key, env)
+	}
+	if u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.ForceQuery {
+		return fmt.Errorf("config: %s (env %s) must be an absolute https URL without credentials, query or fragment: %q",
+			key, env, u.Redacted())
 	}
 	return nil
 }

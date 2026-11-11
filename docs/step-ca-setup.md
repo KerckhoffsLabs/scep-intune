@@ -38,10 +38,14 @@ step ca provisioner add intune --type SCEP \
 
 # Two webhooks. Each prints a distinct "Secret: <base64>" — capture both.
 step ca provisioner webhook add intune intune-challenge \
-  --kind SCEPCHALLENGE --cert-type X509 --url https://<bridge-host>/webhook/validate
+  --kind SCEPCHALLENGE --cert-type X509 --url https://<bridge-host>/validate
 step ca provisioner webhook add intune intune-notify \
-  --kind NOTIFYING     --cert-type X509 --url https://<bridge-host>/webhook/notify
+  --kind NOTIFYING     --cert-type X509 --url https://<bridge-host>/notify
 ```
+
+The bridge serves `/validate` and `/notify` at its root. If a reverse proxy
+publishes it under a prefix (for example `/webhook`), include the prefix in
+step-ca's URLs and have the proxy strip it before forwarding.
 
 Give the printed secrets to the bridge as `SCEP_VALIDATE_SECRET` (challenge) and
 `SCEP_NOTIFY_SECRET` (notify).

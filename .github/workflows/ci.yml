@@ -42,3 +42,22 @@ jobs:
       # the standard vet checks as part of the same pass.
       - name: Test
         run: go test -race -vet=all ./...
+
+  # Full SCEP enrollment: step-ca -> bridge -> Intune mock, no Microsoft tenant.
+  # Tools are downloaded from their official releases and checked against
+  # sha256 hashes pinned in test/e2e/tools.sh.
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Go
+        uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: End-to-end test
+        run: make e2e

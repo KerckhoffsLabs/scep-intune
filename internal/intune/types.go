@@ -6,11 +6,6 @@ const (
 	apiVersion            = "2018-02-20"
 	graphAPIVersion       = "1.0"
 	validationServiceName = "ScepRequestValidationFEService"
-	intuneAppID           = "0000000a-0000-0000-c000-000000000000"
-
-	graphBaseURL = "https://graph.microsoft.com/"
-	graphScope   = "https://graph.microsoft.com/.default"
-	intuneScope  = "https://api.manage.microsoft.com/.default"
 
 	pathValidate      = "ScepActions/validateRequest"
 	pathNotifySuccess = "ScepActions/successNotification"

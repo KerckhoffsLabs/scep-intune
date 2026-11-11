@@ -6,3 +6,5 @@
 *.crt
 .env
 
+# e2e test state and downloaded tools
+test/e2e/.work/

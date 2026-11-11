@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -34,26 +36,36 @@ type tokenSource interface { // nosonar S8196 -- mirrors stdlib oauth2.TokenSour
 	Token(ctx context.Context, scope string) (string, error)
 }
 
+// Endpoints are the Microsoft addresses the client uses. Each URL must end
+// with "/": scopes are derived as "<url>.default" and discovery is fetched from
+// "<GraphURL>v1.0/servicePrincipals/appId=<AppID>/endpoints". The Intune
+// ScepActions address itself comes from discovery.
+type Endpoints struct {
+	GraphURL    string // Graph base URL, also the base of the Graph token scope
+	ResourceURL string // base of the Intune token scope
+	AppID       string // Intune service principal app ID
+}
+
 // Client calls Microsoft Graph (service discovery) and the Intune SCEP
 // validation API on behalf of the webhook handler.
 type Client struct {
-	http         *http.Client
-	tokens       tokenSource
-	callerInfo   string
-	graphBaseURL string
+	http       *http.Client
+	tokens     tokenSource
+	callerInfo string
+	ep         Endpoints
 
 	mu      sync.Mutex
 	baseURI string // discovered ScepRequestValidationFEService URI
 }
 
-// New returns a Client that authenticates with tokens and identifies itself
-// to Intune as callerInfo.
-func New(tokens tokenSource, callerInfo string) *Client {
+// New returns a Client that authenticates with tokens, identifies itself to
+// Intune as callerInfo, and talks to the Microsoft endpoints in ep.
+func New(tokens tokenSource, callerInfo string, ep Endpoints) *Client {
 	return &Client{
-		http:         &http.Client{Timeout: intuneHTTPTimeout},
-		tokens:       tokens,
-		callerInfo:   callerInfo,
-		graphBaseURL: graphBaseURL,
+		http:       &http.Client{Timeout: intuneHTTPTimeout},
+		tokens:     tokens,
+		callerInfo: callerInfo,
+		ep:         ep,
 	}
 }
 
@@ -66,11 +78,11 @@ func (c *Client) discover(ctx context.Context) (string, error) {
 	}
 	c.mu.Unlock()
 
-	tok, err := c.tokens.Token(ctx, graphScope)
+	tok, err := c.tokens.Token(ctx, c.ep.GraphURL+".default")
 	if err != nil {
 		return "", err
 	}
-	url := fmt.Sprintf("%sv1.0/servicePrincipals/appId=%s/endpoints", c.graphBaseURL, intuneAppID)
+	url := fmt.Sprintf("%sv1.0/servicePrincipals/appId=%s/endpoints", c.ep.GraphURL, c.ep.AppID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return "", err
@@ -92,6 +104,9 @@ func (c *Client) discover(ctx context.Context) (string, error) {
 	}
 	for _, e := range disc.Value {
 		if e.ProviderName == validationServiceName {
+			if err := c.checkServiceURI(e.URI); err != nil {
+				return "", err
+			}
 			c.mu.Lock()
 			// Re-check under the lock: a concurrent discover may have
 			// already stored a URI while we were doing the HTTP call.
@@ -106,12 +121,27 @@ func (c *Client) discover(ctx context.Context) (string, error) {
 	return "", fmt.Errorf("intune: %s endpoint not found in discovery", validationServiceName)
 }
 
+// checkServiceURI refuses a discovered service address the bridge must not send
+// its Intune token to: it must be an absolute URL, and https whenever the Graph
+// URL is (always in production, where config only accepts https; tests may run
+// Graph over plain http).
+func (c *Client) checkServiceURI(uri string) error {
+	u, err := url.Parse(uri)
+	if err != nil || u.Host == "" {
+		return fmt.Errorf("intune: discovery returned an invalid %s URI %q", validationServiceName, uri)
+	}
+	if strings.HasPrefix(c.ep.GraphURL, "https://") && u.Scheme != "https" {
+		return fmt.Errorf("intune: discovery returned a non-https %s URI %q", validationServiceName, uri)
+	}
+	return nil
+}
+
 func (c *Client) post(ctx context.Context, path string, payload any) ([]byte, int, error) {
 	base, err := c.discover(ctx)
 	if err != nil {
 		return nil, 0, err
 	}
-	tok, err := c.tokens.Token(ctx, intuneScope)
+	tok, err := c.tokens.Token(ctx, c.ep.ResourceURL+".default")
 	if err != nil {
 		return nil, 0, err
 	}

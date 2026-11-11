@@ -58,6 +58,12 @@ TLS-terminating reverse proxy in front of the bridge.
 Copy [`config.example.yaml`](config.example.yaml); provide secrets via the
 environment. Full reference: [docs/configuration.md](docs/configuration.md).
 
+## Testing without Microsoft
+
+A mock of the Microsoft side (`cmd/intune-mock`) and a full SCEP end-to-end test
+(`make e2e`: step-ca → bridge → mock, no tenant) are described in
+[docs/testing.md](docs/testing.md).
+
 ## Wiring step-ca + Intune
 
 The integration lives entirely in step-ca's configuration (an SCEP provisioner +
