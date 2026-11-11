@@ -21,6 +21,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 
 	"github.com/KerckhoffsLabs/scep-intune/internal/intune"
@@ -127,7 +128,7 @@ func (h *handler) handleNotify(w http.ResponseWriter, r *http.Request) {
 		}
 		err = h.intune.NotifySuccess(r.Context(), req.SCEPTransactionID, csrDER, cert)
 	} else {
-		err = h.intune.NotifyFailure(r.Context(), req.SCEPTransactionID, csrDER, int32(req.SCEPErrorCode), req.SCEPErrorDescription)
+		err = h.intune.NotifyFailure(r.Context(), req.SCEPTransactionID, csrDER, hResult(req.SCEPErrorCode), req.SCEPErrorDescription)
 	}
 	if err != nil {
 		h.log.Error("intune notify error", "transactionID", req.SCEPTransactionID, "err", err)
@@ -178,4 +179,17 @@ func verifySignature(secret, body []byte, sigHex string) bool {
 func writeAllow(w http.ResponseWriter, allow bool) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(response{Allow: allow})
+}
+
+// hResultFail is E_FAIL (0x80004005), reported when step-ca's error code
+// doesn't fit Intune's 32-bit hResult.
+const hResultFail int32 = -2147467259
+
+// hResult converts step-ca's SCEP error code to Intune's int32 hResult without
+// wrapping an out-of-range value into an unrelated code.
+func hResult(code int) int32 {
+	if code < math.MinInt32 || code > math.MaxInt32 {
+		return hResultFail
+	}
+	return int32(code)
 }

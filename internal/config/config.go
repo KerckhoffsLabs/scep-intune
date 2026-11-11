@@ -35,6 +35,7 @@ type Server struct {
 	TLS    TLS    `yaml:"tls"`
 }
 
+// Config is the bridge configuration, loaded from YAML with env overrides.
 type Config struct {
 	Server Server `yaml:"server"`
 
@@ -62,7 +63,7 @@ type Config struct {
 // overrides for secrets (INTUNE_CLIENT_SECRET, SCEP_VALIDATE_SECRET,
 // SCEP_NOTIFY_SECRET).
 func Load(path string) (*Config, error) {
-	b, err := os.ReadFile(path)
+	b, err := os.ReadFile(path) //nolint:gosec // G304: the path is the operator's own -config flag
 	if err != nil {
 		return nil, err
 	}
@@ -159,7 +160,7 @@ func (c *Config) Logger() (*slog.Logger, io.Closer, error) {
 	case "stderr":
 		w = os.Stderr
 	default:
-		f, err := os.OpenFile(c.Logging.Output, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o640)
+		f, err := os.OpenFile(c.Logging.Output, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o640) //nolint:gosec // G302: group-readable for log shippers
 		if err != nil {
 			return nil, nil, fmt.Errorf("config: open log file %q: %w", c.Logging.Output, err)
 		}

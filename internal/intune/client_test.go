@@ -21,7 +21,7 @@ func newTestServer(t *testing.T, validateCode string) (*httptest.Server, *[]byte
 	var lastBody []byte
 	mux := http.NewServeMux()
 	var srv *httptest.Server
-	mux.HandleFunc("/v1.0/servicePrincipals/", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/v1.0/servicePrincipals/", func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode(discoveryResponse{Value: []endpoint{
 			{ProviderName: "Other", URI: "https://wrong"},
 			{ProviderName: validationServiceName, URI: srv.URL},
@@ -36,11 +36,11 @@ func newTestServer(t *testing.T, validateCode string) (*httptest.Server, *[]byte
 	})
 	mux.HandleFunc("/"+pathNotifySuccess, func(w http.ResponseWriter, r *http.Request) {
 		lastBody, _ = io.ReadAll(r.Body)
-		w.WriteHeader(200)
+		w.WriteHeader(http.StatusOK)
 	})
 	mux.HandleFunc("/"+pathNotifyFailure, func(w http.ResponseWriter, r *http.Request) {
 		lastBody, _ = io.ReadAll(r.Body)
-		w.WriteHeader(200)
+		w.WriteHeader(http.StatusOK)
 	})
 	srv = httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
@@ -111,12 +111,12 @@ func TestNotifyFailureTruncates(t *testing.T) {
 func TestNotifyFailureNon200(t *testing.T) {
 	mux := http.NewServeMux()
 	var srv *httptest.Server
-	mux.HandleFunc("/v1.0/servicePrincipals/", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/v1.0/servicePrincipals/", func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode(discoveryResponse{Value: []endpoint{
 			{ProviderName: validationServiceName, URI: srv.URL},
 		}})
 	})
-	mux.HandleFunc("/"+pathNotifyFailure, func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/"+pathNotifyFailure, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 	})
 	srv = httptest.NewServer(mux)
@@ -132,12 +132,12 @@ func TestNotifyFailureNon200(t *testing.T) {
 func TestValidateTransientHTTPError(t *testing.T) {
 	mux := http.NewServeMux()
 	var srv *httptest.Server
-	mux.HandleFunc("/v1.0/servicePrincipals/", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/v1.0/servicePrincipals/", func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode(discoveryResponse{Value: []endpoint{
 			{ProviderName: validationServiceName, URI: srv.URL},
 		}})
 	})
-	mux.HandleFunc("/"+pathValidate, func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/"+pathValidate, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable) // 503: transient, not a rejection
 	})
 	srv = httptest.NewServer(mux)

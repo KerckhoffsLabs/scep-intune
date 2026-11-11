@@ -23,7 +23,7 @@ jobs:
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v9.3.0
         with:
-          version: v2.14.0  # golangci-lint-action v9 requires golangci-lint v2.x
+          version: v2.15.0  # golangci-lint-action v9 requires golangci-lint v2.x; config in .golangci.yml
 
   build-and-test:
     runs-on: ubuntu-latest

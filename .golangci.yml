@@ -1,0 +1,27 @@
+# golangci-lint configuration (v2 format). Run locally with:
+#   golangci-lint run        # lint
+#   golangci-lint fmt        # apply the formatters
+version: "2"
+
+linters:
+  # errcheck, govet, ineffassign, staticcheck, unused
+  default: standard
+  enable:
+    - bodyclose      # HTTP response bodies are closed
+    - errorlint      # wrapped errors are compared with errors.Is/As
+    - gocritic       # common bugs and simplifications
+    - gosec          # security issues (this service handles secrets and TLS)
+    - misspell       # spelling in comments and strings
+    - noctx          # outbound HTTP requests carry a context
+    - revive         # idiomatic Go (golint successor)
+    - unconvert      # unnecessary conversions
+    - usestdlibvars  # http.MethodGet and friends instead of literals
+
+formatters:
+  enable:
+    - gofumpt        # stricter superset of gofmt
+    - goimports      # imports sorted and grouped
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/KerckhoffsLabs/scep-intune

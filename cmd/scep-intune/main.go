@@ -20,6 +20,12 @@ import (
 )
 
 func main() {
+	// run returns instead of calling os.Exit, so deferred cleanup (closing the
+	// log file) always happens.
+	os.Exit(run())
+}
+
+func run() int {
 	cfgPath := flag.String("config", "config.yaml", "path to YAML config")
 	flag.Parse()
 
@@ -29,13 +35,13 @@ func main() {
 	cfg, err := config.Load(*cfgPath)
 	if err != nil {
 		log.Error("config", "err", err)
-		os.Exit(1)
+		return 1
 	}
 
 	logger, logCloser, err := cfg.Logger()
 	if err != nil {
 		log.Error("logging setup", "err", err)
-		os.Exit(1)
+		return 1
 	}
 	if logCloser != nil {
 		defer func() { _ = logCloser.Close() }()
@@ -45,12 +51,12 @@ func main() {
 	validateSecret, err := base64.StdEncoding.DecodeString(cfg.Webhook.ValidateSecret)
 	if err != nil {
 		log.Error("webhook.validate_secret must be base64", "err", err)
-		os.Exit(1)
+		return 1
 	}
 	notifySecret, err := base64.StdEncoding.DecodeString(cfg.Webhook.NotifySecret)
 	if err != nil {
 		log.Error("webhook.notify_secret must be base64", "err", err)
-		os.Exit(1)
+		return 1
 	}
 	if len(validateSecret) == 0 || len(notifySecret) == 0 {
 		log.Warn("a webhook secret is empty: requests are NOT fully authenticated (test/trusted-network only)")
@@ -59,7 +65,7 @@ func main() {
 	tokens, err := intune.NewEntraTokens(cfg.Intune.TenantID, cfg.Intune.ClientID, cfg.Intune.ClientSecret)
 	if err != nil {
 		log.Error("entra credential", "err", err)
-		os.Exit(1)
+		return 1
 	}
 	client := intune.New(tokens, cfg.Intune.CallerInfo)
 
@@ -93,7 +99,7 @@ func main() {
 	select {
 	case err := <-serveErr:
 		log.Error("server failed to start", "err", err)
-		os.Exit(1)
+		return 1
 	case <-ctx.Done():
 		stop() // restore default signal handling: a second signal force-quits
 		log.Info("shutdown signal received, draining in-flight requests")
@@ -101,8 +107,9 @@ func main() {
 		defer cancel()
 		if err := srv.Shutdown(shutdownCtx); err != nil {
 			log.Error("graceful shutdown failed", "err", err)
-			os.Exit(1)
+			return 1
 		}
 		log.Info("shutdown complete")
 	}
+	return 0
 }

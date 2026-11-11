@@ -24,6 +24,7 @@ func NewEntraTokens(tenantID, clientID, clientSecret string) (*EntraTokens, erro
 	return &EntraTokens{cred: cred}, nil
 }
 
+// Token returns an access token for scope from Entra ID.
 func (e *EntraTokens) Token(ctx context.Context, scope string) (string, error) {
 	tk, err := e.cred.GetToken(ctx, policy.TokenRequestOptions{Scopes: []string{scope}})
 	if err != nil {
