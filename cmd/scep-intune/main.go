@@ -62,12 +62,33 @@ func run() int {
 		log.Warn("a webhook secret is empty: requests are NOT fully authenticated (test/trusted-network only)")
 	}
 
-	tokens, err := intune.NewEntraTokens(cfg.Intune.TenantID, cfg.Intune.ClientID, cfg.Intune.ClientSecret)
+	if env := os.Getenv("AZURE_AUTHORITY_HOST"); intune.EnvAuthorityConflicts(cfg.Intune.AuthorityHost, env) {
+		log.Warn("AZURE_AUTHORITY_HOST is ignored: intune.authority_host (INTUNE_AUTHORITY_HOST) decides the Entra authority",
+			"AZURE_AUTHORITY_HOST", env, "authority_host", cfg.Intune.AuthorityHost)
+	}
+	tokens, err := intune.NewEntraTokens(cfg.Intune.TenantID, cfg.Intune.ClientID, cfg.Intune.ClientSecret, cfg.Intune.AuthorityHost)
 	if err != nil {
 		log.Error("entra credential", "err", err)
 		return 1
 	}
-	client := intune.New(tokens, cfg.Intune.CallerInfo)
+	if cfg.Intune.AuthorityHost != config.DefaultAuthorityHost || cfg.Intune.GraphURL != config.DefaultGraphURL ||
+		cfg.Intune.ResourceURL != config.DefaultResourceURL || cfg.Intune.AppID != config.DefaultAppID {
+		level := slog.LevelInfo
+		msg := "using non-default Microsoft endpoints"
+		if !intune.KnownMicrosoftAuthority(cfg.Intune.AuthorityHost) {
+			// The client secret goes to this host: make a stray override visible.
+			level = slog.LevelWarn
+			msg = "using non-default Microsoft endpoints: the Entra client secret is sent to a host that is not a Microsoft authority"
+		}
+		log.Log(context.Background(), level, msg,
+			"authority_host", cfg.Intune.AuthorityHost, "graph_url", cfg.Intune.GraphURL,
+			"resource_url", cfg.Intune.ResourceURL, "app_id", cfg.Intune.AppID)
+	}
+	client := intune.New(tokens, cfg.Intune.CallerInfo, intune.Endpoints{
+		GraphURL:    cfg.Intune.GraphURL,
+		ResourceURL: cfg.Intune.ResourceURL,
+		AppID:       cfg.Intune.AppID,
+	})
 
 	h := webhook.New(client, validateSecret, notifySecret, log)
 

@@ -22,3 +22,9 @@ intune:
   client_id: ""                # or env INTUNE_CLIENT_ID
   client_secret: ""            # prefer env INTUNE_CLIENT_SECRET
   caller_info: "step-ca-scep"
+  # Microsoft endpoints. The defaults target the commercial cloud; change them
+  # only for another Microsoft cloud or a test mock (see docs/configuration.md).
+  # authority_host: "https://login.microsoftonline.com/"   # or env INTUNE_AUTHORITY_HOST
+  # graph_url: "https://graph.microsoft.com/"              # or env INTUNE_GRAPH_URL
+  # resource_url: "https://api.manage.microsoft.com/"      # or env INTUNE_RESOURCE_URL
+  # app_id: "0000000a-0000-0000-c000-000000000000"         # or env INTUNE_APP_ID

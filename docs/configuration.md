@@ -25,6 +25,11 @@ intune:
   client_id: ""             # Entra app (client) ID
   client_secret: ""         # Entra app client secret (prefer env)
   caller_info: "step-ca-scep"
+  # Microsoft endpoints (see "Microsoft endpoints" below); defaults shown.
+  authority_host: "https://login.microsoftonline.com/"
+  graph_url: "https://graph.microsoft.com/"
+  resource_url: "https://api.manage.microsoft.com/"
+  app_id: "0000000a-0000-0000-c000-000000000000"
 
 logging:
   output: "stdout"          # "stdout", "stderr", or a file path (append/created)
@@ -44,12 +49,67 @@ nothing sensitive lands on disk:
 | `INTUNE_CLIENT_SECRET` | `intune.client_secret` |
 | `SCEP_VALIDATE_SECRET` | `webhook.validate_secret` (SCEPCHALLENGE) |
 | `SCEP_NOTIFY_SECRET` | `webhook.notify_secret` (NOTIFYING) |
+| `INTUNE_AUTHORITY_HOST` | `intune.authority_host` |
+| `INTUNE_GRAPH_URL` | `intune.graph_url` |
+| `INTUNE_RESOURCE_URL` | `intune.resource_url` |
+| `INTUNE_APP_ID` | `intune.app_id` |
+
+An environment variable overrides the file only when it is non-empty.
 
 `intune.tenant_id`, `intune.client_id`, and `intune.client_secret` are
 **required**.
 
 The webhook secrets are optional but strongly recommended — see
 below.
+
+## Microsoft endpoints
+
+The bridge talks to three Microsoft services. Their addresses mirror the four
+values Microsoft's reference SCEP validation library
+([Intune-Resource-Access](https://github.com/microsoft/Intune-Resource-Access/tree/master/src/CsrValidation))
+makes configurable, and default to the commercial cloud:
+
+| Setting | Default | Used for |
+|---------|---------|----------|
+| `intune.authority_host` | `https://login.microsoftonline.com/` | Entra sign-in (client-credentials token) |
+| `intune.graph_url` | `https://graph.microsoft.com/` | Graph service discovery, at `<graph_url>v1.0/servicePrincipals/appId=<app_id>/endpoints`; Graph token scope `<graph_url>.default` |
+| `intune.resource_url` | `https://api.manage.microsoft.com/` | Intune token scope `<resource_url>.default` (never contacted directly: the Intune address comes from discovery) |
+| `intune.app_id` | `0000000a-0000-0000-c000-000000000000` | Intune's service principal, looked up during discovery |
+
+The three URLs must be absolute `https://` URLs without credentials, query or
+fragment; the scheme and host are lower-cased and a trailing slash is added if
+missing. `app_id` must be a GUID. The address returned by Graph discovery must
+be `https://` too: the bridge refuses to send its Intune token anywhere else. When `authority_host` differs from the commercial host, the bridge also
+turns off the Azure SDK's *instance discovery*, which would otherwise ask
+`login.microsoftonline.com` to approve the unknown host. The bridge logs the
+effective endpoints at startup whenever any differs from its default, as a
+**warning** when `authority_host` is not a Microsoft authority (commercial, US
+Government or China): the Entra client secret is sent to that host.
+
+The Azure SDK also reads `AZURE_AUTHORITY_HOST`. The bridge's own setting wins:
+if `AZURE_AUTHORITY_HOST` is set to another host, it is ignored and the bridge
+logs a warning. Use `intune.authority_host` or `INTUNE_AUTHORITY_HOST` instead.
+
+### Other Microsoft clouds
+
+To target another Microsoft cloud (for example US Government GCC High, DoD, or
+China), set the four values for that cloud. Take them from Microsoft's
+documentation: the
+[national cloud deployments](https://learn.microsoft.com/en-us/graph/deployments)
+page lists the Entra and Graph hosts, and the Intune values come from Microsoft's
+Intune documentation for that cloud.
+
+> **Only the commercial cloud has been tested.** Microsoft documents the
+> third-party CA SCEP API
+> ([overview](https://learn.microsoft.com/en-us/intune/fundamentals/certificates/third-party-ca-scep),
+> [API reference](https://learn.microsoft.com/en-us/intune/fundamentals/certificates/ref-scep-api))
+> for the commercial cloud. Confirm with Microsoft that it's available in your
+> cloud before relying on it there.
+
+### Testing without Microsoft
+
+Point `authority_host` and `graph_url` at the bundled Intune mock and leave
+`resource_url` and `app_id` at their defaults: see [testing.md](testing.md).
 
 ## Webhook secrets
 

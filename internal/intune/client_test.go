@@ -6,13 +6,26 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
+	"sync"
 	"testing"
 )
 
-type fakeTokens struct{}
+// fakeTokens returns a fixed token and records the scopes it was asked for.
+type fakeTokens struct {
+	mu     sync.Mutex
+	scopes []string
+}
 
-func (fakeTokens) Token(_ context.Context, _ string) (string, error) { return "tok", nil }
+func (f *fakeTokens) Token(_ context.Context, scope string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.scopes = append(f.scopes, scope)
+	return "tok", nil
+}
+
+const testResourceURL = "https://res.example/"
 
 // newTestServer serves both the Graph discovery endpoint and the ScepActions
 // endpoints, recording the last validate/notify bodies.
@@ -48,10 +61,54 @@ func newTestServer(t *testing.T, validateCode string) (*httptest.Server, *[]byte
 }
 
 func newTestClient(srv *httptest.Server) *Client {
-	c := New(fakeTokens{}, "scep-step-ca/test")
-	c.http = srv.Client()
-	c.graphBaseURL = srv.URL + "/" // override Graph base to the test server
+	c, _ := newRecordingClient(srv)
 	return c
+}
+
+// newRecordingClient points the client's Graph base at the test server and
+// returns the token source so tests can inspect the requested scopes.
+func newRecordingClient(srv *httptest.Server) (*Client, *fakeTokens) {
+	tok := &fakeTokens{}
+	c := New(tok, "scep-step-ca/test", Endpoints{
+		GraphURL:    srv.URL + "/",
+		ResourceURL: testResourceURL,
+		AppID:       "app-123",
+	})
+	c.http = srv.Client()
+	return c, tok
+}
+
+func TestDiscoveryUsesAppID(t *testing.T) {
+	var gotPath string
+	mux := http.NewServeMux()
+	var srv *httptest.Server
+	mux.HandleFunc("/v1.0/servicePrincipals/", func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		_ = json.NewEncoder(w).Encode(discoveryResponse{Value: []endpoint{{ProviderName: validationServiceName, URI: srv.URL}}})
+	})
+	mux.HandleFunc("/"+pathValidate, func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(codeResponse{Code: "Success"})
+	})
+	srv = httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	if err := newTestClient(srv).Validate(context.Background(), "txn", []byte("der")); err != nil {
+		t.Fatal(err)
+	}
+	if gotPath != "/v1.0/servicePrincipals/appId=app-123/endpoints" {
+		t.Fatalf("discovery path = %q", gotPath)
+	}
+}
+
+func TestScopesDerivedFromEndpoints(t *testing.T) {
+	srv, _ := newTestServer(t, "Success")
+	c, tok := newRecordingClient(srv)
+	if err := c.Validate(context.Background(), "txn", []byte("der")); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{srv.URL + "/.default", testResourceURL + ".default"}
+	if !reflect.DeepEqual(tok.scopes, want) {
+		t.Fatalf("scopes = %v, want %v", tok.scopes, want)
+	}
 }
 
 func TestValidateSuccess(t *testing.T) {
@@ -147,5 +204,23 @@ func TestValidateTransientHTTPError(t *testing.T) {
 	err := c.Validate(context.Background(), "txn-6", []byte("der"))
 	if err == nil || !strings.Contains(err.Error(), "503") {
 		t.Fatalf("err = %v, want transient HTTP 503 error (not a rejection)", err)
+	}
+}
+
+// With an https Graph URL (always the case in production: config rejects
+// anything else), the bridge must not send its Intune token to a non-https
+// address returned by discovery.
+func TestDiscoveryRejectsNonHTTPSServiceURI(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1.0/servicePrincipals/", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(discoveryResponse{Value: []endpoint{{ProviderName: validationServiceName, URI: "http://plaintext.example/intune"}}})
+	})
+	srv := httptest.NewTLSServer(mux)
+	t.Cleanup(srv.Close)
+	c := New(&fakeTokens{}, "test", Endpoints{GraphURL: srv.URL + "/", ResourceURL: testResourceURL, AppID: "app"})
+	c.http = srv.Client()
+	err := c.Validate(context.Background(), "txn", []byte("der"))
+	if err == nil || !strings.Contains(err.Error(), "https") {
+		t.Fatalf("err = %v, want a refusal of the non-https service URI", err)
 	}
 }
