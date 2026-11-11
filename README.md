@@ -45,8 +45,11 @@ SCEP_VALIDATE_SECRET=… SCEP_NOTIFY_SECRET=… \
 ```
 
 This repository doesn't ship a container image. To run the bridge in a
-container, build one around this static binary (`CGO_ENABLED=0`) in your own
-pipeline.
+container, build the image in your own pipeline with `CGO_ENABLED=0`. That gives
+a statically linked binary, which runs in minimal images without a C library
+(`scratch`, distroless or Chainguard `static`). With cgo enabled, the default
+wherever a C compiler is installed, Go's `net` package links against libc and
+the binary fails to start in such images.
 
 step-ca requires the webhook URL to be **HTTPS** — enable `server.tls` or put a
 TLS-terminating reverse proxy in front of the bridge.
