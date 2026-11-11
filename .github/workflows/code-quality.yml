@@ -66,7 +66,7 @@ jobs:
       # flags every tag ref. Ignored for workflow files only: the organization's "Require lockfile"
       # Actions policy blocks any workflow whose dependencies are not in the lockfile.
       - name: SonarCloud scan
-        uses: SonarSource/sonarqube-scan-action@v8.3.0
+        uses: SonarSource/sonarqube-scan-action@v8.4.1
         with:
           args: >
             -Dsonar.projectKey=KerckhoffsLabs_scep-intune

@@ -30,10 +30,12 @@ const intuneHTTPTimeout = 15 * time.Second
 // tokenSource provides OAuth2 bearer tokens for a given scope. The name mirrors
 // the standard library's oauth2.TokenSource, which is the idiomatic name for this
 // abstraction, so the -er-suffix convention (sonar godre:S8196) does not apply.
-type tokenSource interface { //nosonar S8196 -- mirrors stdlib oauth2.TokenSource
+type tokenSource interface { // nosonar S8196 -- mirrors stdlib oauth2.TokenSource
 	Token(ctx context.Context, scope string) (string, error)
 }
 
+// Client calls Microsoft Graph (service discovery) and the Intune SCEP
+// validation API on behalf of the webhook handler.
 type Client struct {
 	http         *http.Client
 	tokens       tokenSource
@@ -44,6 +46,8 @@ type Client struct {
 	baseURI string // discovered ScepRequestValidationFEService URI
 }
 
+// New returns a Client that authenticates with tokens and identifies itself
+// to Intune as callerInfo.
 func New(tokens tokenSource, callerInfo string) *Client {
 	return &Client{
 		http:         &http.Client{Timeout: intuneHTTPTimeout},

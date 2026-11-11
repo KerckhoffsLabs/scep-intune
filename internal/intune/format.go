@@ -1,7 +1,7 @@
 package intune
 
 import (
-	"crypto/sha1"
+	"crypto/sha1" //nolint:gosec // G505: Intune-mandated certificate thumbprint, see thumbprintSHA1
 	"crypto/x509"
 	"fmt"
 	"strings"
@@ -16,7 +16,7 @@ import (
 // the upstream API contract. Hence the weak-hash finding (sonar go:S4790) is a
 // false positive and is suppressed below.
 func thumbprintSHA1(cert *x509.Certificate) string {
-	sum := sha1.Sum(cert.Raw) //nosonar S4790 -- Intune-mandated cert thumbprint, not a sensitive hash
+	sum := sha1.Sum(cert.Raw) //nolint:gosec // G401, nosonar S4790 -- Intune-mandated cert thumbprint, not a sensitive hash
 	parts := make([]string, len(sum))
 	for i, b := range sum {
 		parts[i] = fmt.Sprintf("%02X", b)

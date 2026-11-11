@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -46,7 +47,7 @@ func signed(path string, body any) *http.Request {
 	b, _ := json.Marshal(body)
 	mac := hmac.New(sha256.New, testSecret)
 	mac.Write(b)
-	req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(b))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, path, bytes.NewReader(b))
 	req.Header.Set("X-Smallstep-Signature", hex.EncodeToString(mac.Sum(nil)))
 	return req
 }
@@ -131,5 +132,22 @@ func TestNotifyFailureWhenNoCert(t *testing.T) {
 	}
 	if got := strings.Join(fi.calls, ","); got != "failure" {
 		t.Errorf("calls = %s, want failure", got)
+	}
+}
+
+// step-ca's SCEP error code is an int; Intune's hResult is an int32. A value
+// out of range must not wrap around into an unrelated code.
+func TestHResult(t *testing.T) {
+	for in, want := range map[int]int32{
+		0:                 0,
+		2:                 2,
+		-2147024809:       -2147024809,
+		math.MaxInt32:     math.MaxInt32,
+		math.MaxInt32 + 1: hResultFail,
+		math.MinInt32 - 1: hResultFail,
+	} {
+		if got := hResult(in); got != want {
+			t.Errorf("hResult(%d) = %d, want %d", in, got, want)
+		}
 	}
 }
