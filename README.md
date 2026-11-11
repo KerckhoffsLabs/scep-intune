@@ -37,18 +37,16 @@ a valid signature are rejected.
 ## Quick start
 
 ```bash
-# Build + run with Docker
-docker build -t scep-intune .
-docker run --rm -p 8080:8080 \
-  -e INTUNE_TENANT_ID=… -e INTUNE_CLIENT_ID=… -e INTUNE_CLIENT_SECRET=… \
-  -e SCEP_VALIDATE_SECRET=… -e SCEP_NOTIFY_SECRET=… \
-  -v "$PWD/config.example.yaml:/etc/scep/config.yaml:ro" \
-  scep-intune
-
-# …or run the binary directly
 go build -o bin/scep-intune ./cmd/scep-intune
-./bin/scep-intune -config config.yaml
+
+INTUNE_TENANT_ID=… INTUNE_CLIENT_ID=… INTUNE_CLIENT_SECRET=… \
+SCEP_VALIDATE_SECRET=… SCEP_NOTIFY_SECRET=… \
+  ./bin/scep-intune -config config.example.yaml
 ```
+
+This repository doesn't ship a container image. To run the bridge in a
+container, build one around this static binary (`CGO_ENABLED=0`) in your own
+pipeline.
 
 step-ca requires the webhook URL to be **HTTPS** — enable `server.tls` or put a
 TLS-terminating reverse proxy in front of the bridge.
