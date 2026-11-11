@@ -44,9 +44,8 @@ SCEP_VALIDATE_SECRET=… SCEP_NOTIFY_SECRET=… \
   ./bin/scep-intune -config config.example.yaml
 ```
 
-This repository doesn't ship a container image. To run the bridge in a
-container, build the image in your own pipeline with `CGO_ENABLED=0`. That gives
-a statically linked binary, which runs in minimal images without a C library
+To run the bridge in a container, build it with `CGO_ENABLED=0`. That gives a
+statically linked binary, which runs in minimal images without a C library
 (`scratch`, distroless or Chainguard `static`). With cgo enabled, the default
 wherever a C compiler is installed, Go's `net` package links against libc and
 the binary fails to start in such images.
