@@ -1,0 +1,54 @@
+version: 2
+
+# A cooldown lets a fresh release show its defects before it is adopted. Applied uniformly, it would
+# also delay security fixes that ship without an advisory, which Dependabot cannot tell apart from an
+# ordinary bump. So the wait is split: patch releases, where security fixes land and whose regressions
+# are the cheapest to revert, wait one day; everything else waits a week.
+#
+# Each ecosystem has two groups. Without `applies-to`, a group covers version updates only and every
+# security update arrives in a pull request of its own: one group takes the weekly bump, the other
+# whatever security opens.
+updates:
+  # The module at the root, the only go.mod in the repository. Dependabot updates go.sum with it.
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+      semver-patch-days: 1
+    open-pull-requests-limit: 10
+    groups:
+      gomod:
+        applies-to: version-updates
+        patterns: ["*"]
+      gomod-security:
+        applies-to: security-updates
+        patterns: ["*"]
+    commit-message:
+      prefix: "chore(deps)"
+
+  # Workflows reference actions by tag and pin them in .github/workflows/actions.lock, which the
+  # organization's "Require lockfile" policy enforces. A bump that leaves the lockfile behind is
+  # blocked until it is regenerated: run `gh actions-lock` on the pull request's branch.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      # semver-patch-days is not supported for github-actions.
+      default-days: 7
+    groups:
+      actions:
+        applies-to: version-updates
+        patterns: ["*"]
+      actions-security:
+        applies-to: security-updates
+        patterns: ["*"]
+    commit-message:
+      prefix: "ci"
+
+# Not tracked by Dependabot, so bumped by hand:
+# - The Go toolchain: the `go` directive in go.mod, which CI follows through go-version-file.
+# - golangci-lint: the `version` input of golangci-lint-action in ci.yml.
+# - The e2e tools (step-ca, step, scepclient): versions and sha256 hashes pinned in test/e2e/tools.sh.
