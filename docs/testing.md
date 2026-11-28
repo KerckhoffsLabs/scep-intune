@@ -77,7 +77,8 @@ SSL_CERT_FILE=/path/to/ca-that-signed-mock.crt \
 ```
 
 `tenant_id`, `client_id` and `client_secret` are still required, but any values
-work.
+work. So are the webhook secrets: use the ones step-ca printed for your
+webhooks (`SCEP_VALIDATE_SECRET`, `SCEP_NOTIFY_SECRET`).
 
 ## End-to-end test
 

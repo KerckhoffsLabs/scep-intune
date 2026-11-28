@@ -103,12 +103,14 @@ func run(parent context.Context, args []string, lookupEnv func(string) (string, 
 
 	ctx, stop := signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	drained := make(chan error, 1)
 	go func() {
 		<-ctx.Done()
+		stop() // restore default signal handling: a second signal force-quits
 		// The drain deadline must outlive ctx, which has just ended.
 		shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer cancel()
-		_ = srv.Shutdown(shutdownCtx)
+		drained <- srv.Shutdown(shutdownCtx)
 	}()
 
 	// Bind before serving, so the log names the address actually bound (the
@@ -120,8 +122,14 @@ func run(parent context.Context, args []string, lookupEnv func(string) (string, 
 	}
 	log.Info("intune-mock starting: for tests only, never point a production bridge here",
 		"listen", *listen, "addr", ln.Addr().String(), "config", m.String())
-	if err := srv.ServeTLS(ln, *cert, *key); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	if err := srv.ServeTLS(ln, *cert, *key); !errors.Is(err, http.ErrServerClosed) {
 		log.Error("server failed", "err", err)
+		return 1
+	}
+	// ServeTLS returns as soon as Shutdown begins: wait for in-flight requests
+	// to finish before the process exits.
+	if err := <-drained; err != nil {
+		log.Error("graceful shutdown failed", "err", err)
 		return 1
 	}
 	return 0

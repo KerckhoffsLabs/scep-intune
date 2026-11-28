@@ -222,3 +222,65 @@ func (b *syncBuffer) String() string {
 	defer b.mu.Unlock()
 	return b.buf.String()
 }
+
+// Shutdown drains: run does not return while a request is still in flight,
+// and that request gets its response.
+func TestRunDrainsInFlightRequests(t *testing.T) {
+	cert, key, client := writeCert(t)
+	var out syncBuffer
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done := make(chan int, 1)
+	go func() {
+		done <- run(ctx, []string{"-listen", "127.0.0.1:0", "-cert", cert, "-key", key, "-base-url", "https://intune-mock.example"}, noEnv, &out, io.Discard)
+	}()
+	addr := waitAddr(t, &out, done)
+
+	// A token request whose body is still arriving keeps its handler busy.
+	body, upload := io.Pipe()
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, "https://"+addr+"/tenant/oauth2/v2.0/token", body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	type result struct {
+		status int
+		err    error
+	}
+	got := make(chan result, 1)
+	go func() {
+		resp, err := client.Do(req)
+		if err != nil {
+			got <- result{err: err}
+			return
+		}
+		_ = resp.Body.Close()
+		got <- result{status: resp.StatusCode}
+	}()
+	if _, err := io.WriteString(upload, "grant_type=client_credentials"); err != nil {
+		t.Fatal(err)
+	}
+	for !strings.Contains(out.String(), `"path":"/tenant/oauth2/v2.0/token"`) {
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	cancel()
+	select {
+	case code := <-done:
+		t.Fatalf("run returned %d with a request still in flight", code)
+	case <-time.After(300 * time.Millisecond):
+	}
+
+	_ = upload.Close() // finish the body: the handler answers, the drain ends
+	if r := <-got; r.err != nil || r.status == 0 {
+		t.Fatalf("in-flight request: status %d err %v, want a response", r.status, r.err)
+	}
+	select {
+	case code := <-done:
+		if code != 0 {
+			t.Fatalf("exit = %d, want 0; log:\n%s", code, out.String())
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("run did not return after the drain")
+	}
+}

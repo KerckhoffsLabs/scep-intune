@@ -8,6 +8,8 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"slices"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -49,6 +51,12 @@ type Config struct {
 		// base64 HMAC-SHA256 keys; prefer env SCEP_VALIDATE_SECRET / SCEP_NOTIFY_SECRET.
 		ValidateSecret string `yaml:"validate_secret"`
 		NotifySecret   string `yaml:"notify_secret"`
+		// AllowUnsigned lets a secret be empty. step-ca then signs with an
+		// empty key, which anyone can reproduce, so that endpoint is not
+		// authenticated at all. It exists for ca.json-managed provisioners,
+		// which cannot store a webhook secret, on a trusted network only.
+		// Env SCEP_ALLOW_UNSIGNED.
+		AllowUnsigned bool `yaml:"allow_unsigned"`
 	} `yaml:"webhook"`
 
 	Logging Logging `yaml:"logging"`
@@ -90,7 +98,9 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 	cfg.applyDefaults()
-	cfg.applyEnv()
+	if err := cfg.applyEnv(); err != nil {
+		return nil, err
+	}
 	cfg.normaliseEndpoints()
 	if err := cfg.Validate(); err != nil {
 		return nil, err
@@ -144,7 +154,14 @@ func (c *Config) normaliseEndpoints() {
 	}
 }
 
-func (c *Config) applyEnv() {
+func (c *Config) applyEnv() error {
+	if v := os.Getenv("SCEP_ALLOW_UNSIGNED"); v != "" {
+		allow, err := strconv.ParseBool(v)
+		if err != nil {
+			return fmt.Errorf("config: SCEP_ALLOW_UNSIGNED must be true or false: %q", v)
+		}
+		c.Webhook.AllowUnsigned = allow
+	}
 	if v := os.Getenv("INTUNE_CLIENT_SECRET"); v != "" {
 		c.Intune.ClientSecret = v
 	}
@@ -172,17 +189,12 @@ func (c *Config) applyEnv() {
 	if v := os.Getenv("INTUNE_APP_ID"); v != "" {
 		c.Intune.AppID = v
 	}
+	return nil
 }
 
 // Validate returns an error listing every missing required field.
 func (c *Config) Validate() error {
 	var missing []string
-	// The webhook secrets are intentionally NOT required. An admin-managed
-	// step-ca provisioner has a real per-webhook secret (set both here); a
-	// ca.json-managed provisioner cannot store one (the field is json:"-") and
-	// signs with an empty key, so an empty secret matches but disables real
-	// authentication — acceptable only on a trusted network / for testing. main
-	// logs a warning when either is empty.
 	req := map[string]string{
 		"intune.tenant_id":     c.Intune.TenantID,
 		"intune.client_id":     c.Intune.ClientID,
@@ -201,8 +213,22 @@ func (c *Config) Validate() error {
 			missing = append(missing, "server.tls.key")
 		}
 	}
+	// An admin-managed step-ca provisioner has a real per-webhook secret. A
+	// ca.json-managed one cannot store a secret (the field is json:"-") and
+	// signs with an empty key, which anyone can reproduce: allowed only when
+	// the operator says so explicitly, and main warns about it.
+	if !c.Webhook.AllowUnsigned {
+		if c.Webhook.ValidateSecret == "" {
+			missing = append(missing, "webhook.validate_secret")
+		}
+		if c.Webhook.NotifySecret == "" {
+			missing = append(missing, "webhook.notify_secret")
+		}
+	}
 	if len(missing) > 0 {
-		return fmt.Errorf("config: missing required fields: %v", missing)
+		slices.Sort(missing)
+		return fmt.Errorf("config: missing required fields: %v (an empty webhook secret disables authentication: "+
+			"set webhook.allow_unsigned (env SCEP_ALLOW_UNSIGNED) to accept that on a trusted network)", missing)
 	}
 	for _, e := range []struct{ key, env, val string }{
 		{"intune.authority_host", "INTUNE_AUTHORITY_HOST", c.Intune.AuthorityHost},

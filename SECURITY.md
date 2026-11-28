@@ -23,7 +23,8 @@ Out of scope:
 - findings that require an already-compromised host, or access to the bridge's configuration, its
   environment or step-ca's webhook secrets;
 - deployments that go against the documentation, such as serving the webhooks over plain HTTP outside
-  a trusted network or putting secrets in a world-readable config file;
+  a trusted network, setting `webhook.allow_unsigned` outside a trusted network, or putting secrets
+  in a world-readable config file;
 - `cmd/intune-mock`, `internal/intunemock` and the code under `test/`, which are test doubles and do
   not ship, unless they compromise CI.
 

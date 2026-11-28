@@ -27,7 +27,7 @@ func clearEnv(t *testing.T) {
 		"INTUNE_CLIENT_SECRET", "INTUNE_TENANT_ID", "INTUNE_CLIENT_ID",
 		"SCEP_VALIDATE_SECRET", "SCEP_NOTIFY_SECRET",
 		"INTUNE_AUTHORITY_HOST", "INTUNE_GRAPH_URL", "INTUNE_RESOURCE_URL", "INTUNE_APP_ID",
-		"AZURE_AUTHORITY_HOST",
+		"AZURE_AUTHORITY_HOST", "SCEP_ALLOW_UNSIGNED",
 	} {
 		t.Setenv(k, "")
 	}
@@ -267,22 +267,51 @@ func TestRunListenFailure(t *testing.T) {
 	}
 }
 
-// An empty webhook secret disables authentication for that endpoint, so the
-// bridge says so at startup. A busy port then stops it before it serves.
-func TestRunWarnsOnEmptySecret(t *testing.T) {
+// An empty webhook secret is anyone's signature: the bridge refuses to start
+// with one unless webhook.allow_unsigned is set.
+func TestRunRefusesEmptySecret(t *testing.T) {
 	clearEnv(t)
-	ln, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = ln.Close() }()
-	cfg, logPath := writeConfig(t, ln.Addr().String(), "")
+	cfg, _ := writeConfig(t, "127.0.0.1:0", "")
 	rewrite(t, cfg, b64(notifyKey), "")
-	if code := run(t.Context(), []string{"-config", cfg}, io.Discard, io.Discard); code != 1 {
+	var out bytes.Buffer
+	if code := run(t.Context(), []string{"-config", cfg}, &out, io.Discard); code != 1 {
 		t.Fatalf("exit = %d, want 1", code)
 	}
-	if log := readFile(t, logPath); !strings.Contains(log, "requests are NOT fully authenticated") {
-		t.Errorf("log lacks the empty-secret warning:\n%s", log)
+	if !strings.Contains(out.String(), "webhook.notify_secret") || !strings.Contains(out.String(), "webhook.allow_unsigned") {
+		t.Errorf("bootstrap log lacks the refusal:\n%s", out.String())
+	}
+}
+
+// With webhook.allow_unsigned, the bridge starts with an empty secret, warns
+// about that endpoint only, and serves it unauthenticated as configured.
+func TestRunAllowUnsignedWarns(t *testing.T) {
+	clearEnv(t)
+	cfg, logPath := writeConfig(t, "127.0.0.1:0", "")
+	rewrite(t, cfg, b64(notifyKey), "")
+	rewrite(t, cfg, "webhook:\n", "webhook:\n  allow_unsigned: true\n")
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	addr, done := startBridge(ctx, t, cfg, logPath)
+	// /notify accepts an empty-key signature; /validate still needs its secret.
+	const badCert = `{"x509Certificate":{"raw":"AAAA"}}`
+	if got := post(t, addr, "/notify", "", badCert); got != http.StatusBadRequest {
+		t.Errorf("/notify with an empty-key signature: status %d, want 400 (signature accepted)", got)
+	}
+	if got := post(t, addr, "/validate", "", `{}`); got != http.StatusUnauthorized {
+		t.Errorf("/validate with an empty-key signature: status %d, want 401", got)
+	}
+	cancel()
+	if code := <-done; code != 0 {
+		t.Fatalf("exit = %d, want 0", code)
+	}
+
+	log := readFile(t, logPath)
+	if !strings.Contains(log, `"endpoint":"/notify"`) || !strings.Contains(log, "NOT authenticated") {
+		t.Errorf("log lacks the warning for /notify:\n%s", log)
+	}
+	if strings.Contains(log, `"endpoint":"/validate"`) {
+		t.Errorf("log warns about /validate, whose secret is set:\n%s", log)
 	}
 }
 
