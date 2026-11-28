@@ -17,8 +17,9 @@ server:
 webhook:
   # step-ca generates a DISTINCT secret per webhook, so each endpoint has its own.
   # base64 HMAC-SHA256 keys; prefer the env vars below.
-  validate_secret: ""       # SCEPCHALLENGE webhook secret
-  notify_secret: ""         # NOTIFYING webhook secret
+  validate_secret: ""       # SCEPCHALLENGE webhook secret (required)
+  notify_secret: ""         # NOTIFYING webhook secret (required)
+  allow_unsigned: false     # accept an empty secret: see "Webhook secrets"
 
 intune:
   tenant_id: ""             # Entra tenant (directory) ID
@@ -49,6 +50,7 @@ nothing sensitive lands on disk:
 | `INTUNE_CLIENT_SECRET` | `intune.client_secret` |
 | `SCEP_VALIDATE_SECRET` | `webhook.validate_secret` (SCEPCHALLENGE) |
 | `SCEP_NOTIFY_SECRET` | `webhook.notify_secret` (NOTIFYING) |
+| `SCEP_ALLOW_UNSIGNED` | `webhook.allow_unsigned` (`true` or `false`) |
 | `INTUNE_AUTHORITY_HOST` | `intune.authority_host` |
 | `INTUNE_GRAPH_URL` | `intune.graph_url` |
 | `INTUNE_RESOURCE_URL` | `intune.resource_url` |
@@ -56,11 +58,10 @@ nothing sensitive lands on disk:
 
 An environment variable overrides the file only when it is non-empty.
 
-`intune.tenant_id`, `intune.client_id`, and `intune.client_secret` are
-**required**.
-
-The webhook secrets are optional but strongly recommended — see
-below.
+`intune.tenant_id`, `intune.client_id`, `intune.client_secret`,
+`webhook.validate_secret` and `webhook.notify_secret` are **required**; the
+webhook secrets can only be left empty with `webhook.allow_unsigned` (see
+below).
 
 ## Microsoft endpoints
 
@@ -117,11 +118,18 @@ step-ca signs each webhook call with the secret generated when you ran
 `step ca provisioner webhook add` (see [step-ca-setup.md](step-ca-setup.md)).
 Provide the matching secrets so the bridge can verify the signature.
 
-If a secret is left empty the bridge logs a warning and accepts unsigned
-requests — only acceptable on a trusted/isolated network. Note that a
-`ca.json`-managed step-ca provisioner **cannot store a webhook secret** (the
-field is `json:"-"`), so it signs with an empty key; real secrets require
-running step-ca in **remote-management (admin) mode**.
+The bridge refuses to start with an empty secret. A `ca.json`-managed step-ca
+provisioner **cannot store a webhook secret** (the field is `json:"-"`), so it
+signs with an empty key: a signature anyone can compute, which authenticates
+nothing. Real secrets require running step-ca in **remote-management (admin)
+mode**, as [step-ca-setup.md](step-ca-setup.md) does.
+
+If you must use a `ca.json`-managed provisioner, set `webhook.allow_unsigned:
+true` (or `SCEP_ALLOW_UNSIGNED=true`) and leave the secret empty. The bridge
+then accepts requests to that endpoint from anyone who can reach it, and logs
+a warning naming the endpoint at startup: only do this on a trusted, isolated
+network. `SCEP_ALLOW_UNSIGNED=false` turns the option off even when the file
+sets it.
 
 ## TLS
 

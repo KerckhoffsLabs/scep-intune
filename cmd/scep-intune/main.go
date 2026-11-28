@@ -72,8 +72,12 @@ func run(parent context.Context, args []string, stdout, stderr io.Writer) int {
 		log.Error("webhook.notify_secret must be base64", "err", err)
 		return 1
 	}
-	if len(validateSecret) == 0 || len(notifySecret) == 0 {
-		log.Warn("a webhook secret is empty: requests are NOT fully authenticated (test/trusted-network only)")
+	// config.Load only lets a secret be empty under webhook.allow_unsigned.
+	for endpoint, secret := range map[string][]byte{"/validate": validateSecret, "/notify": notifySecret} {
+		if len(secret) == 0 {
+			log.Warn("webhook.allow_unsigned: requests to this endpoint are NOT authenticated, anyone can sign them (trusted network only)",
+				"endpoint", endpoint)
+		}
 	}
 
 	if env := os.Getenv("AZURE_AUTHORITY_HOST"); intune.EnvAuthorityConflicts(cfg.Intune.AuthorityHost, env) {

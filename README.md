@@ -79,6 +79,8 @@ vanilla. Step-by-step guide, including the non-obvious gotchas:
 
 - Requests are rejected unless the HMAC-SHA256 signature matches the per-endpoint
   secret (`SCEP_VALIDATE_SECRET` for `/validate`, `SCEP_NOTIFY_SECRET` for `/notify`).
+  Both are required: the bridge refuses to start with an empty one unless
+  `webhook.allow_unsigned` is set (see [docs/configuration.md](docs/configuration.md#webhook-secrets)).
 - A definitive Intune rejection returns `allow:false`; a transient/upstream error
   returns HTTP 502 so step-ca fails the request and the device retries.
 - The bridge stores **no** private keys or certificates and is safe to scale

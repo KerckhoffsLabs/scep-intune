@@ -8,8 +8,16 @@ import (
 	"testing"
 )
 
+// writeConfig writes body to a temp config file. Loading it needs webhook
+// secrets, so it supplies placeholders through the environment when a test
+// hasn't set its own: tests about the secrets clear them after calling it.
 func writeConfig(t *testing.T, body string) string {
 	t.Helper()
+	for _, k := range []string{"SCEP_VALIDATE_SECRET", "SCEP_NOTIFY_SECRET"} {
+		if os.Getenv(k) == "" {
+			t.Setenv(k, "c2VjcmV0")
+		}
+	}
 	p := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
@@ -191,6 +199,8 @@ func TestExampleConfigLoads(t *testing.T) {
 	t.Setenv("INTUNE_TENANT_ID", "t")
 	t.Setenv("INTUNE_CLIENT_ID", "c")
 	t.Setenv("INTUNE_CLIENT_SECRET", "s")
+	t.Setenv("SCEP_VALIDATE_SECRET", "c2VjcmV0")
+	t.Setenv("SCEP_NOTIFY_SECRET", "c2VjcmV0")
 	cfg, err := Load("../../config.example.yaml")
 	if err != nil {
 		t.Fatal(err)
@@ -282,6 +292,7 @@ func clearEnv(t *testing.T) {
 		"INTUNE_CLIENT_SECRET", "INTUNE_TENANT_ID", "INTUNE_CLIENT_ID",
 		"SCEP_VALIDATE_SECRET", "SCEP_NOTIFY_SECRET",
 		"INTUNE_AUTHORITY_HOST", "INTUNE_GRAPH_URL", "INTUNE_RESOURCE_URL", "INTUNE_APP_ID",
+		"SCEP_ALLOW_UNSIGNED",
 	} {
 		t.Setenv(k, "")
 	}
@@ -406,5 +417,86 @@ func TestAuthorityHostFromEnv(t *testing.T) {
 	}
 	if cfg.Intune.AuthorityHost != "https://login.microsoftonline.us/" {
 		t.Errorf("authority host = %q, want the env value, normalised", cfg.Intune.AuthorityHost)
+	}
+}
+
+const intuneOnly = "intune:\n  tenant_id: t\n  client_id: c\n  client_secret: s\n"
+
+// An empty webhook secret is anyone's signature, so it is refused unless the
+// operator opts in, and the error says how.
+func TestEmptyWebhookSecretRefused(t *testing.T) {
+	for _, tc := range []struct {
+		name, validate, notify string
+		want                   []string
+	}{
+		{name: "both empty", want: []string{"webhook.notify_secret", "webhook.validate_secret"}},
+		{name: "validate empty", notify: "c2VjcmV0", want: []string{"webhook.validate_secret"}},
+		{name: "notify empty", validate: "c2VjcmV0", want: []string{"webhook.notify_secret"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			clearEnv(t)
+			p := writeConfig(t, intuneOnly)
+			t.Setenv("SCEP_VALIDATE_SECRET", tc.validate)
+			t.Setenv("SCEP_NOTIFY_SECRET", tc.notify)
+			_, err := Load(p)
+			if err == nil {
+				t.Fatal("want an error for an empty webhook secret")
+			}
+			for _, w := range append(tc.want, "webhook.allow_unsigned", "SCEP_ALLOW_UNSIGNED") {
+				if !strings.Contains(err.Error(), w) {
+					t.Errorf("err = %v, want it to name %s", err, w)
+				}
+			}
+		})
+	}
+}
+
+// With the opt-in, from the file or the environment, empty secrets load.
+func TestAllowUnsigned(t *testing.T) {
+	for name, tc := range map[string]struct{ body, env string }{
+		"file": {body: intuneOnly + "webhook:\n  allow_unsigned: true\n"},
+		"env":  {body: intuneOnly, env: "true"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			clearEnv(t)
+			p := writeConfig(t, tc.body)
+			t.Setenv("SCEP_VALIDATE_SECRET", "")
+			t.Setenv("SCEP_NOTIFY_SECRET", "")
+			t.Setenv("SCEP_ALLOW_UNSIGNED", tc.env)
+			cfg, err := Load(p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !cfg.Webhook.AllowUnsigned {
+				t.Error("AllowUnsigned = false, want true")
+			}
+		})
+	}
+}
+
+// SCEP_ALLOW_UNSIGNED=false turns off an opt-in from the file, and a value that
+// isn't a boolean is an error rather than a silent default.
+func TestAllowUnsignedEnv(t *testing.T) {
+	clearEnv(t)
+	p := writeConfig(t, intuneOnly+"webhook:\n  allow_unsigned: true\n")
+	t.Setenv("SCEP_VALIDATE_SECRET", "")
+	t.Setenv("SCEP_NOTIFY_SECRET", "")
+	t.Setenv("SCEP_ALLOW_UNSIGNED", "false")
+	if _, err := Load(p); err == nil || !strings.Contains(err.Error(), "webhook.validate_secret") {
+		t.Errorf("SCEP_ALLOW_UNSIGNED=false: err = %v, want the empty secrets refused", err)
+	}
+	t.Setenv("SCEP_ALLOW_UNSIGNED", "yes please")
+	if _, err := Load(p); err == nil || !strings.Contains(err.Error(), "SCEP_ALLOW_UNSIGNED must be true or false") {
+		t.Errorf("invalid SCEP_ALLOW_UNSIGNED: err = %v", err)
+	}
+}
+
+// The allow_unsigned hint appears only when a webhook secret is what's
+// missing, so it never suggests weakening authentication for another field.
+func TestAllowUnsignedHintOnlyForSecrets(t *testing.T) {
+	clearEnv(t)
+	_, err := Load(writeConfig(t, "intune:\n  client_id: c\n  client_secret: s\n"))
+	if err == nil || !strings.Contains(err.Error(), "intune.tenant_id") || strings.Contains(err.Error(), "allow_unsigned") {
+		t.Fatalf("err = %v, want intune.tenant_id named without the allow_unsigned hint", err)
 	}
 }
