@@ -6,7 +6,9 @@ package main
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"flag"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -22,15 +24,24 @@ import (
 func main() {
 	// run returns instead of calling os.Exit, so deferred cleanup (closing the
 	// log file) always happens.
-	os.Exit(run())
+	os.Exit(run(context.Background(), os.Args[1:], os.Stdout))
 }
 
-func run() int {
-	cfgPath := flag.String("config", "config.yaml", "path to YAML config")
-	flag.Parse()
+// run starts the bridge and blocks until it fails or a shutdown signal (or the
+// cancellation of parent) drains it. args are the command-line arguments
+// without the program name; stdout receives the bootstrap log.
+func run(parent context.Context, args []string, stdout io.Writer) int {
+	fs := flag.NewFlagSet("scep-intune", flag.ContinueOnError)
+	cfgPath := fs.String("config", "config.yaml", "path to YAML config")
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
+		return 2
+	}
 
 	// Bootstrap logger until config (which may redirect logs to a file) loads.
-	log := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	log := slog.New(slog.NewJSONHandler(stdout, nil))
 
 	cfg, err := config.Load(*cfgPath)
 	if err != nil {
@@ -104,7 +115,7 @@ func run() int {
 		IdleTimeout:       120 * time.Second,
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, stop := signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	serveErr := make(chan error, 1)

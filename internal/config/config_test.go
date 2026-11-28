@@ -263,3 +263,120 @@ func TestEndpointRejectsUserinfo(t *testing.T) {
 		t.Fatalf("error leaks the password: %v", err)
 	}
 }
+
+func TestLoadErrors(t *testing.T) {
+	if _, err := Load(filepath.Join(t.TempDir(), "missing.yaml")); err == nil {
+		t.Error("missing file: want an error")
+	}
+	if _, err := Load(writeConfig(t, "intune: [not, a, mapping]\n")); err == nil {
+		t.Error("invalid YAML: want an error")
+	}
+}
+
+func TestEndpointRejectsUnparsableURL(t *testing.T) {
+	t.Setenv("INTUNE_GRAPH_URL", "https://[::1")
+	_, err := Load(writeConfig(t, "intune:\n  tenant_id: t\n  client_id: c\n  client_secret: s\n"))
+	if err == nil || !strings.Contains(err.Error(), "intune.graph_url") {
+		t.Fatalf("err = %v, want an error naming intune.graph_url", err)
+	}
+}
+
+// Each logging option builds a logger that filters at its level and writes in
+// its format; stdout and stderr have no closer.
+func TestLogger(t *testing.T) {
+	for _, tc := range []struct {
+		level, format   string
+		debug, info, ok bool
+	}{
+		{level: "debug", format: "json", debug: true, info: true},
+		{level: "", format: "", info: true},
+		{level: "INFO", format: "text", info: true},
+		{level: "warn", format: "json"},
+		{level: "warning", format: "text"},
+		{level: "error", format: "json"},
+	} {
+		path := filepath.Join(t.TempDir(), "bridge.log")
+		c := &Config{Logging: Logging{Output: path, Level: tc.level, Format: tc.format}}
+		log, closer, err := c.Logger()
+		if err != nil {
+			t.Fatalf("%+v: %v", tc, err)
+		}
+		log.Debug("debug-line")
+		log.Info("info-line")
+		log.Warn("warn-line")
+		if err := closer.Close(); err != nil {
+			t.Fatal(err)
+		}
+		b, err := os.ReadFile(path) //nolint:gosec // G304: the test's own temp file
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := string(b)
+		if got := strings.Contains(out, "debug-line"); got != tc.debug {
+			t.Errorf("level %q: debug logged = %v, want %v", tc.level, got, tc.debug)
+		}
+		if got := strings.Contains(out, "info-line"); got != tc.info {
+			t.Errorf("level %q: info logged = %v, want %v", tc.level, got, tc.info)
+		}
+		if tc.level != "error" && !strings.Contains(out, "warn-line") {
+			t.Errorf("level %q: warn not logged", tc.level)
+		}
+		if tc.level == "error" && strings.Contains(out, "warn-line") {
+			t.Error("level error: warn logged")
+		}
+		if json := strings.HasPrefix(out, "{"); out != "" && json != (tc.format != "text") {
+			t.Errorf("format %q: output %q", tc.format, out)
+		}
+	}
+
+	for _, output := range []string{"stdout", "", "stderr"} {
+		c := &Config{Logging: Logging{Output: output}}
+		if log, closer, err := c.Logger(); err != nil || log == nil || closer != nil {
+			t.Errorf("output %q: logger=%v closer=%v err=%v, want a logger and no closer", output, log, closer, err)
+		}
+	}
+}
+
+// The log file is appended to, not truncated, so a restart keeps earlier logs.
+func TestLoggerAppends(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "bridge.log")
+	if err := os.WriteFile(path, []byte("earlier\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	log, closer, err := (&Config{Logging: Logging{Output: path}}).Logger()
+	if err != nil {
+		t.Fatal(err)
+	}
+	log.Info("later")
+	_ = closer.Close()
+	b, _ := os.ReadFile(path) //nolint:gosec // G304: the test's own temp file
+	if !strings.HasPrefix(string(b), "earlier\n") || !strings.Contains(string(b), "later") {
+		t.Fatalf("log file = %q, want the earlier line kept", b)
+	}
+}
+
+func TestLoggerErrors(t *testing.T) {
+	for name, l := range map[string]Logging{
+		"unwritable output": {Output: filepath.Join(t.TempDir(), "no-such-dir", "bridge.log")},
+		"invalid level":     {Output: "stdout", Level: "loud"},
+		"invalid format":    {Output: "stdout", Format: "xml"},
+	} {
+		if _, _, err := (&Config{Logging: l}).Logger(); err == nil {
+			t.Errorf("%s: want an error", name)
+		}
+	}
+}
+
+// An invalid level or format is reported before the log file is opened, so the
+// error never leaves a file handle open (or creates an empty file).
+func TestLoggerInvalidOptionsDoNotOpenFile(t *testing.T) {
+	for _, l := range []Logging{{Level: "loud"}, {Format: "xml"}} {
+		l.Output = filepath.Join(t.TempDir(), "bridge.log")
+		if _, closer, err := (&Config{Logging: l}).Logger(); err == nil || closer != nil {
+			t.Fatalf("%+v: closer=%v err=%v, want an error and no closer", l, closer, err)
+		}
+		if _, err := os.Stat(l.Output); !os.IsNotExist(err) {
+			t.Errorf("%+v: log file created despite the error (stat err = %v)", l, err)
+		}
+	}
+}
