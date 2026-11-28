@@ -2,6 +2,10 @@
 
 [![GitHub release](https://img.shields.io/github/release/KerckhoffsLabs/scep-intune.svg)](https://github.com/KerckhoffsLabs/scep-intune/releases/latest)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Go](https://img.shields.io/github/go-mod/go-version/KerckhoffsLabs/scep-intune)](go.mod)
+[![codecov](https://codecov.io/gh/KerckhoffsLabs/scep-intune/graph/badge.svg)](https://codecov.io/gh/KerckhoffsLabs/scep-intune)
+[![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=KerckhoffsLabs_scep-intune&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=KerckhoffsLabs_scep-intune)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/KerckhoffsLabs/scep-intune/badge)](https://scorecard.dev/viewer/?uri=github.com/KerckhoffsLabs/scep-intune)
 
 A small, stateless webhook bridge that lets a **vanilla
 [step-ca](https://github.com/smallstep/certificates)** issue certificates to

@@ -1,0 +1,58 @@
+name: OpenSSF Scorecard
+
+# OpenSSF Scorecard checks the repository's supply-chain practices (pinned dependencies, token
+# permissions, branch protection, signed releases, dangerous workflow patterns, ...). Results go to
+# GitHub code scanning as SARIF and, with publish_results, to the public Scorecard API behind the
+# README badge. Weekly, on every push to main, and whenever a branch protection rule changes.
+#
+# Scorecard restricts a publishing workflow: no workflow- or job-level env or defaults, and only the
+# steps below. Like every workflow here, its actions are pinned in actions.lock (gh actions-lock).
+on:
+  push:
+    branches: [main]
+  branch_protection_rule:
+  schedule:
+    - cron: '30 1 * * 1'
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  analysis:
+    name: Scorecard analysis
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      # Upload the SARIF to code scanning.
+      security-events: write
+      # Sign the published results with the workflow's OIDC identity.
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      # No repo_token: the default GITHUB_TOKEN cannot read branch protection settings, so the
+      # Branch-Protection check reports "not evaluated" and drops out of the average rather than
+      # scoring zero. To evaluate it, store a fine-grained token with the read access
+      # ossf/scorecard-action documents in a secret of its own and pass it here as repo_token; do
+      # not reuse a broader token.
+      - name: Run Scorecard
+        uses: ossf/scorecard-action@v2.6.0
+        with:
+          results_file: results.sarif
+          results_format: sarif
+          publish_results: true
+
+      - name: Upload SARIF to code scanning
+        uses: github/codeql-action/upload-sarif@v4.39.3
+        with:
+          sarif_file: results.sarif
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: scorecard-results
+          path: results.sarif
+          retention-days: 5
