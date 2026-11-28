@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -281,54 +282,54 @@ func TestEndpointRejectsUnparsableURL(t *testing.T) {
 	}
 }
 
-// Each logging option builds a logger that filters at its level and writes in
-// its format; stdout and stderr have no closer.
-func TestLogger(t *testing.T) {
+// logLines builds a logger from l writing to a temp file, logs one line at
+// each of debug, info and warn, and returns the file's content.
+func logLines(t *testing.T, l Logging) string {
+	t.Helper()
+	l.Output = filepath.Join(t.TempDir(), "bridge.log")
+	log, closer, err := (&Config{Logging: l}).Logger()
+	if err != nil {
+		t.Fatalf("%+v: %v", l, err)
+	}
+	log.Debug("debug-line")
+	log.Info("info-line")
+	log.Warn("warn-line")
+	if err := closer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(l.Output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+// Each level filters what it should and each format writes what it should.
+func TestLoggerLevelsAndFormats(t *testing.T) {
 	for _, tc := range []struct {
-		level, format   string
-		debug, info, ok bool
+		level, format     string
+		debug, info, warn bool
 	}{
-		{level: "debug", format: "json", debug: true, info: true},
-		{level: "", format: "", info: true},
-		{level: "INFO", format: "text", info: true},
-		{level: "warn", format: "json"},
-		{level: "warning", format: "text"},
+		{level: "debug", format: "json", debug: true, info: true, warn: true},
+		{level: "", format: "", info: true, warn: true},
+		{level: "INFO", format: "text", info: true, warn: true},
+		{level: "warn", format: "json", warn: true},
+		{level: "warning", format: "text", warn: true},
 		{level: "error", format: "json"},
 	} {
-		path := filepath.Join(t.TempDir(), "bridge.log")
-		c := &Config{Logging: Logging{Output: path, Level: tc.level, Format: tc.format}}
-		log, closer, err := c.Logger()
-		if err != nil {
-			t.Fatalf("%+v: %v", tc, err)
+		out := logLines(t, Logging{Level: tc.level, Format: tc.format})
+		got := []bool{strings.Contains(out, "debug-line"), strings.Contains(out, "info-line"), strings.Contains(out, "warn-line")}
+		if want := []bool{tc.debug, tc.info, tc.warn}; !slices.Equal(got, want) {
+			t.Errorf("level %q: logged debug/info/warn = %v, want %v", tc.level, got, want)
 		}
-		log.Debug("debug-line")
-		log.Info("info-line")
-		log.Warn("warn-line")
-		if err := closer.Close(); err != nil {
-			t.Fatal(err)
-		}
-		b, err := os.ReadFile(path) //nolint:gosec // G304: the test's own temp file
-		if err != nil {
-			t.Fatal(err)
-		}
-		out := string(b)
-		if got := strings.Contains(out, "debug-line"); got != tc.debug {
-			t.Errorf("level %q: debug logged = %v, want %v", tc.level, got, tc.debug)
-		}
-		if got := strings.Contains(out, "info-line"); got != tc.info {
-			t.Errorf("level %q: info logged = %v, want %v", tc.level, got, tc.info)
-		}
-		if tc.level != "error" && !strings.Contains(out, "warn-line") {
-			t.Errorf("level %q: warn not logged", tc.level)
-		}
-		if tc.level == "error" && strings.Contains(out, "warn-line") {
-			t.Error("level error: warn logged")
-		}
-		if json := strings.HasPrefix(out, "{"); out != "" && json != (tc.format != "text") {
+		if isJSON := strings.HasPrefix(out, "{"); out != "" && isJSON != (tc.format != "text") {
 			t.Errorf("format %q: output %q", tc.format, out)
 		}
 	}
+}
 
+// stdout and stderr need no closing, so Logger returns no closer for them.
+func TestLoggerConsoleOutputs(t *testing.T) {
 	for _, output := range []string{"stdout", "", "stderr"} {
 		c := &Config{Logging: Logging{Output: output}}
 		if log, closer, err := c.Logger(); err != nil || log == nil || closer != nil {

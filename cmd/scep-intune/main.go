@@ -91,7 +91,7 @@ func run(parent context.Context, args []string, stdout io.Writer) int {
 			level = slog.LevelWarn
 			msg = "using non-default Microsoft endpoints: the Entra client secret is sent to a host that is not a Microsoft authority"
 		}
-		log.Log(context.Background(), level, msg,
+		log.Log(parent, level, msg,
 			"authority_host", cfg.Intune.AuthorityHost, "graph_url", cfg.Intune.GraphURL,
 			"resource_url", cfg.Intune.ResourceURL, "app_id", cfg.Intune.AppID)
 	}
@@ -135,7 +135,8 @@ func run(parent context.Context, args []string, stdout io.Writer) int {
 	case <-ctx.Done():
 		stop() // restore default signal handling: a second signal force-quits
 		log.Info("shutdown signal received, draining in-flight requests")
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+		// The drain deadline must outlive parent, which may be what just ended.
+		shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(parent), 25*time.Second)
 		defer cancel()
 		if err := srv.Shutdown(shutdownCtx); err != nil {
 			log.Error("graceful shutdown failed", "err", err)
