@@ -2,6 +2,7 @@
 
 [![GitHub release](https://img.shields.io/github/release/KerckhoffsLabs/scep-intune.svg)](https://github.com/KerckhoffsLabs/scep-intune/releases/latest)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/KerckhoffsLabs/scep-intune/badge)](https://scorecard.dev/viewer/?uri=github.com/KerckhoffsLabs/scep-intune)
 
 A small, stateless webhook bridge that lets a **vanilla
 [step-ca](https://github.com/smallstep/certificates)** issue certificates to
