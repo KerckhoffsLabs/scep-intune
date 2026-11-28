@@ -490,3 +490,13 @@ func TestAllowUnsignedEnv(t *testing.T) {
 		t.Errorf("invalid SCEP_ALLOW_UNSIGNED: err = %v", err)
 	}
 }
+
+// The allow_unsigned hint appears only when a webhook secret is what's
+// missing, so it never suggests weakening authentication for another field.
+func TestAllowUnsignedHintOnlyForSecrets(t *testing.T) {
+	clearEnv(t)
+	_, err := Load(writeConfig(t, "intune:\n  client_id: c\n  client_secret: s\n"))
+	if err == nil || !strings.Contains(err.Error(), "intune.tenant_id") || strings.Contains(err.Error(), "allow_unsigned") {
+		t.Fatalf("err = %v, want intune.tenant_id named without the allow_unsigned hint", err)
+	}
+}
