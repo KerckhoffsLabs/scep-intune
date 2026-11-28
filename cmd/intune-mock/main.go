@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -41,16 +42,18 @@ func applyEnv(fs *flag.FlagSet, lookup func(string) (string, bool)) error {
 
 func main() {
 	// run returns instead of calling os.Exit, so deferred cleanup runs first.
-	os.Exit(run(context.Background(), os.Args[1:], os.LookupEnv, os.Stdout))
+	os.Exit(run(context.Background(), os.Args[1:], os.LookupEnv, os.Stdout, os.Stderr))
 }
 
 // run serves the mock until it fails or a shutdown signal (or the cancellation
 // of parent) stops it. args are the command-line arguments without the program
-// name, lookupEnv reads MOCK_* variables and stdout receives the log.
-func run(parent context.Context, args []string, lookupEnv func(string) (string, bool), stdout io.Writer) int {
+// name, lookupEnv reads MOCK_* variables, stdout receives the log and stderr
+// the usage text.
+func run(parent context.Context, args []string, lookupEnv func(string) (string, bool), stdout, stderr io.Writer) int {
 	log := slog.New(slog.NewJSONHandler(stdout, nil))
 
 	fs := flag.NewFlagSet("intune-mock", flag.ContinueOnError)
+	fs.SetOutput(stderr)
 	listen := fs.String("listen", ":8443", "address to listen on")
 	cert := fs.String("cert", "", "PEM certificate (required: the Azure SDK only accepts an https authority)")
 	key := fs.String("key", "", "PEM private key (required)")
@@ -96,7 +99,7 @@ func run(parent context.Context, args []string, lookupEnv func(string) (string, 
 		log.Info("request", "method", r.Method, "path", r.URL.Path)
 		m.ServeHTTP(w, r)
 	})
-	srv := &http.Server{Addr: *listen, Handler: logged, ReadHeaderTimeout: 10 * time.Second}
+	srv := &http.Server{Handler: logged, ReadHeaderTimeout: 10 * time.Second}
 
 	ctx, stop := signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -108,8 +111,16 @@ func run(parent context.Context, args []string, lookupEnv func(string) (string, 
 		_ = srv.Shutdown(shutdownCtx)
 	}()
 
-	log.Info("intune-mock starting: for tests only, never point a production bridge here", "listen", *listen, "config", m.String())
-	if err := srv.ListenAndServeTLS(*cert, *key); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	// Bind before serving, so the log names the address actually bound (the
+	// port of a ":0" listen included).
+	ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", *listen)
+	if err != nil {
+		log.Error("server failed", "err", err)
+		return 1
+	}
+	log.Info("intune-mock starting: for tests only, never point a production bridge here",
+		"listen", *listen, "addr", ln.Addr().String(), "config", m.String())
+	if err := srv.ServeTLS(ln, *cert, *key); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Error("server failed", "err", err)
 		return 1
 	}

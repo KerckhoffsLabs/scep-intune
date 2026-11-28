@@ -32,6 +32,8 @@ type fakeIntune struct {
 	calls       []string
 	lastTxn     string
 	lastCSR     []byte
+	lastHResult int32
+	lastDesc    string
 }
 
 func (f *fakeIntune) Validate(_ context.Context, txn string, csr []byte) error {
@@ -46,8 +48,9 @@ func (f *fakeIntune) NotifySuccess(_ context.Context, txn string, csr []byte, ce
 	return f.notifyErr
 }
 
-func (f *fakeIntune) NotifyFailure(_ context.Context, _ string, _ []byte, _ int32, _ string) error {
+func (f *fakeIntune) NotifyFailure(_ context.Context, txn string, csr []byte, hResult int32, desc string) error {
 	f.calls = append(f.calls, "failure")
+	f.lastTxn, f.lastCSR, f.lastHResult, f.lastDesc = txn, csr, hResult, desc
 	return f.notifyErr
 }
 
@@ -60,6 +63,16 @@ func signed(path string, body any) *http.Request {
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, path, bytes.NewReader(b))
 	req.Header.Set("X-Smallstep-Signature", hex.EncodeToString(mac.Sum(nil)))
 	return req
+}
+
+// allowed decodes a {"allow": ...} reply, failing the test on any other body.
+func allowed(t *testing.T, rec *httptest.ResponseRecorder) bool {
+	t.Helper()
+	var resp response
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("body %q is not a webhook response: %v", rec.Body.String(), err)
+	}
+	return resp.Allow
 }
 
 func do(h http.Handler, r *http.Request) *httptest.ResponseRecorder {
@@ -137,8 +150,27 @@ func TestNotifyFailureWhenNoCert(t *testing.T) {
 		"scepErrorCode":          5,
 		"scepErrorDescription":   "boom",
 	}))
-	if rec.Code != http.StatusOK {
-		t.Fatalf("code = %d", rec.Code)
+	if rec.Code != http.StatusOK || !allowed(t, rec) {
+		t.Fatalf("code = %d body %q, want 200 with allow=true", rec.Code, rec.Body.String())
+	}
+	if got := strings.Join(fi.calls, ","); got != "failure" {
+		t.Fatalf("calls = %s, want failure", got)
+	}
+	if fi.lastTxn != "txn-4" || string(fi.lastCSR) != "csr" || fi.lastHResult != 5 || fi.lastDesc != "boom" {
+		t.Errorf("txn=%q csr=%q hResult=%d desc=%q, want txn-4, csr, 5, boom", fi.lastTxn, fi.lastCSR, fi.lastHResult, fi.lastDesc)
+	}
+}
+
+// An empty certificate is no certificate: step-ca reports a failure.
+func TestNotifyEmptyCertIsFailure(t *testing.T) {
+	fi := &fakeIntune{}
+	rec := do(New(fi, testSecret, testSecret, nil), signed("/notify", map[string]any{
+		"x509Certificate":   map[string]any{"raw": []byte{}},
+		"scepTransactionID": "txn-12",
+		"scepErrorCode":     2,
+	}))
+	if rec.Code != http.StatusOK || !allowed(t, rec) {
+		t.Fatalf("code = %d body %q, want 200 with allow=true", rec.Code, rec.Body.String())
 	}
 	if got := strings.Join(fi.calls, ","); got != "failure" {
 		t.Errorf("calls = %s, want failure", got)
@@ -190,8 +222,8 @@ func TestNotifySuccessWithCert(t *testing.T) {
 		"x509Certificate":        map[string]any{"raw": testCertDER(t)},
 		"scepTransactionID":      "txn-5",
 	}))
-	if rec.Code != http.StatusOK {
-		t.Fatalf("code = %d", rec.Code)
+	if rec.Code != http.StatusOK || !allowed(t, rec) {
+		t.Fatalf("code = %d body %q, want 200 with allow=true", rec.Code, rec.Body.String())
 	}
 	if got := strings.Join(fi.calls, ","); got != "success" {
 		t.Fatalf("calls = %s, want success", got)
@@ -309,5 +341,67 @@ func TestHealthz(t *testing.T) {
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/healthz", nil)
 	if rec := do(New(&fakeIntune{}, testSecret, testSecret, nil), req); rec.Code != http.StatusOK {
 		t.Fatalf("code = %d, want 200", rec.Code)
+	}
+}
+
+// /validate is verified with its own secret: a request signed with the
+// /notify secret is refused, so holding the NOTIFYING secret cannot forge an
+// allow.
+func TestValidateUsesItsOwnSecret(t *testing.T) {
+	fi := &fakeIntune{}
+	rec := do(New(fi, []byte("other-secret"), testSecret, nil), signed("/validate", map[string]any{
+		"x509CertificateRequest": map[string]any{"raw": []byte("csr")},
+		"scepTransactionID":      "txn-13",
+	}))
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("code = %d, want 401", rec.Code)
+	}
+	if len(fi.calls) != 0 {
+		t.Errorf("intune called despite the wrong secret: %v", fi.calls)
+	}
+}
+
+// Every refusal is fail-closed: no error response, whatever its cause, carries
+// "allow": true.
+func TestErrorResponsesNeverAllow(t *testing.T) {
+	sign := func(path string, body []byte) *http.Request {
+		mac := hmac.New(sha256.New, testSecret)
+		mac.Write(body)
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, path, bytes.NewReader(body))
+		req.Header.Set("X-Smallstep-Signature", hex.EncodeToString(mac.Sum(nil)))
+		return req
+	}
+	badSig := signed("/validate", map[string]any{"scepTransactionID": "x"})
+	badSig.Header.Set("X-Smallstep-Signature", "deadbeef")
+	noSig := signed("/validate", map[string]any{"scepTransactionID": "x"})
+	noSig.Header.Del("X-Smallstep-Signature")
+	csr := map[string]any{"x509CertificateRequest": map[string]any{"raw": []byte("csr")}}
+	upstream := errors.New("intune: returned HTTP 503")
+
+	for _, tc := range []struct {
+		name string
+		fake *fakeIntune
+		req  *http.Request
+		code int
+	}{
+		{"bad signature", &fakeIntune{}, badSig, http.StatusUnauthorized},
+		{"no signature", &fakeIntune{}, noSig, http.StatusUnauthorized},
+		{"GET", &fakeIntune{}, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/validate", nil), http.StatusMethodNotAllowed},
+		{"invalid JSON", &fakeIntune{}, sign("/validate", []byte("{")), http.StatusBadRequest},
+		{"body read error", &fakeIntune{}, httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/validate", failingReader{}), http.StatusBadRequest},
+		{"missing CSR", &fakeIntune{}, signed("/validate", map[string]any{}), http.StatusBadRequest},
+		{"validate upstream error", &fakeIntune{validateErr: upstream}, signed("/validate", csr), http.StatusBadGateway},
+		{"invalid certificate", &fakeIntune{}, signed("/notify", map[string]any{"x509Certificate": map[string]any{"raw": []byte("x")}}), http.StatusBadRequest},
+		{"notify upstream error", &fakeIntune{notifyErr: upstream}, signed("/notify", csr), http.StatusBadGateway},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := do(New(tc.fake, testSecret, testSecret, nil), tc.req)
+			if rec.Code != tc.code {
+				t.Fatalf("code = %d, want %d", rec.Code, tc.code)
+			}
+			if body := rec.Body.String(); strings.Contains(strings.ReplaceAll(body, " ", ""), `"allow":true`) {
+				t.Errorf("error response allows: %q", body)
+			}
+		})
 	}
 }

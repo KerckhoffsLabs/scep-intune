@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -131,8 +132,37 @@ func TestValidateRejected(t *testing.T) {
 	srv, _ := newTestServer(t, "ChallengeExpired")
 	c := newTestClient(srv)
 	err := c.Validate(context.Background(), "txn-2", []byte("der"))
-	if err == nil || !strings.Contains(err.Error(), "ChallengeExpired") {
-		t.Fatalf("err = %v", err)
+	if !errors.Is(err, ErrRejected) || !strings.Contains(err.Error(), "ChallengeExpired") {
+		t.Fatalf("err = %v, want ErrRejected naming ChallengeExpired", err)
+	}
+}
+
+// serveValidate answers discovery with the server itself and every
+// validateRequest with status and body.
+func serveValidate(t *testing.T, status int, body string) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	var srv *httptest.Server
+	mux.HandleFunc("/v1.0/servicePrincipals/", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(discoveryResponse{Value: []endpoint{{ProviderName: validationServiceName, URI: srv.URL}}})
+	})
+	mux.HandleFunc("/"+pathValidate, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(status)
+		_, _ = io.WriteString(w, body)
+	})
+	srv = httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// Only an exact "Success" allows: a 200 without that code is a rejection,
+// never an allow.
+func TestValidateWithoutSuccessCodeIsRejected(t *testing.T) {
+	for _, body := range []string{`{}`, `null`, `{"code":""}`, `{"code":"success"}`, `{"errorDescription":"Success"}`} {
+		err := newTestClient(serveValidate(t, http.StatusOK, body)).Validate(context.Background(), "txn", []byte("der"))
+		if !errors.Is(err, ErrRejected) {
+			t.Errorf("body %s: err = %v, want ErrRejected", body, err)
+		}
 	}
 }
 
@@ -188,24 +218,15 @@ func TestNotifyFailureNon200(t *testing.T) {
 	}
 }
 
-func TestValidateTransientHTTPError(t *testing.T) {
-	mux := http.NewServeMux()
-	var srv *httptest.Server
-	mux.HandleFunc("/v1.0/servicePrincipals/", func(w http.ResponseWriter, _ *http.Request) {
-		_ = json.NewEncoder(w).Encode(discoveryResponse{Value: []endpoint{
-			{ProviderName: validationServiceName, URI: srv.URL},
-		}})
-	})
-	mux.HandleFunc("/"+pathValidate, func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusServiceUnavailable) // 503: transient, not a rejection
-	})
-	srv = httptest.NewServer(mux)
-	t.Cleanup(srv.Close)
-
-	c := newTestClient(srv)
-	err := c.Validate(context.Background(), "txn-6", []byte("der"))
-	if err == nil || !strings.Contains(err.Error(), "503") {
-		t.Fatalf("err = %v, want transient HTTP 503 error (not a rejection)", err)
+// A non-2xx reply is a transport, auth or throttling failure: an error the
+// device retries, never a rejection (which would deny it) nor an allow. The
+// body is ignored even when it looks like a success.
+func TestValidateHTTPErrorIsNotRejection(t *testing.T) {
+	for _, status := range []int{http.StatusUnauthorized, http.StatusTooManyRequests, http.StatusInternalServerError, http.StatusServiceUnavailable} {
+		err := newTestClient(serveValidate(t, status, `{"code":"Success"}`)).Validate(context.Background(), "txn", []byte("der"))
+		if err == nil || errors.Is(err, ErrRejected) || !strings.Contains(err.Error(), strconv.Itoa(status)) {
+			t.Errorf("HTTP %d: err = %v, want a non-rejection error naming the status", status, err)
+		}
 	}
 }
 

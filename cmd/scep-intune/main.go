@@ -10,6 +10,7 @@ import (
 	"flag"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -24,14 +25,16 @@ import (
 func main() {
 	// run returns instead of calling os.Exit, so deferred cleanup (closing the
 	// log file) always happens.
-	os.Exit(run(context.Background(), os.Args[1:], os.Stdout))
+	os.Exit(run(context.Background(), os.Args[1:], os.Stdout, os.Stderr))
 }
 
 // run starts the bridge and blocks until it fails or a shutdown signal (or the
 // cancellation of parent) drains it. args are the command-line arguments
-// without the program name; stdout receives the bootstrap log.
-func run(parent context.Context, args []string, stdout io.Writer) int {
+// without the program name; stdout receives the bootstrap log and stderr the
+// usage text.
+func run(parent context.Context, args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("scep-intune", flag.ContinueOnError)
+	fs.SetOutput(stderr)
 	cfgPath := fs.String("config", "config.yaml", "path to YAML config")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -107,7 +110,6 @@ func run(parent context.Context, args []string, stdout io.Writer) int {
 	// is generous because each request fans out to Intune (and, on first call,
 	// Graph discovery) before responding.
 	srv := &http.Server{
-		Addr:              cfg.Server.Listen,
 		Handler:           h,
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
@@ -118,13 +120,20 @@ func run(parent context.Context, args []string, stdout io.Writer) int {
 	ctx, stop := signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// Bind before serving, so a busy port fails here and the log names the
+	// address actually bound (the port of a ":0" listen included).
+	ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", cfg.Server.Listen)
+	if err != nil {
+		log.Error("server failed to start", "err", err)
+		return 1
+	}
+	log.Info("starting", "listen", cfg.Server.Listen, "addr", ln.Addr().String(), "tls", cfg.Server.TLS.Enabled)
 	serveErr := make(chan error, 1)
 	go func() {
-		log.Info("starting", "listen", cfg.Server.Listen, "tls", cfg.Server.TLS.Enabled)
 		if cfg.Server.TLS.Enabled {
-			serveErr <- srv.ListenAndServeTLS(cfg.Server.TLS.Cert, cfg.Server.TLS.Key)
+			serveErr <- srv.ServeTLS(ln, cfg.Server.TLS.Cert, cfg.Server.TLS.Key)
 		} else {
-			serveErr <- srv.ListenAndServe()
+			serveErr <- srv.Serve(ln)
 		}
 	}()
 

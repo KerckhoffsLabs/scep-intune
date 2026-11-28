@@ -274,7 +274,21 @@ func TestLoadErrors(t *testing.T) {
 	}
 }
 
+// clearEnv blanks every variable Load reads, so the environment of the
+// machine running the tests cannot change their outcome.
+func clearEnv(t *testing.T) {
+	t.Helper()
+	for _, k := range []string{
+		"INTUNE_CLIENT_SECRET", "INTUNE_TENANT_ID", "INTUNE_CLIENT_ID",
+		"SCEP_VALIDATE_SECRET", "SCEP_NOTIFY_SECRET",
+		"INTUNE_AUTHORITY_HOST", "INTUNE_GRAPH_URL", "INTUNE_RESOURCE_URL", "INTUNE_APP_ID",
+	} {
+		t.Setenv(k, "")
+	}
+}
+
 func TestEndpointRejectsUnparsableURL(t *testing.T) {
+	clearEnv(t)
 	t.Setenv("INTUNE_GRAPH_URL", "https://[::1")
 	_, err := Load(writeConfig(t, "intune:\n  tenant_id: t\n  client_id: c\n  client_secret: s\n"))
 	if err == nil || !strings.Contains(err.Error(), "intune.graph_url") {
@@ -379,5 +393,18 @@ func TestLoggerInvalidOptionsDoNotOpenFile(t *testing.T) {
 		if _, err := os.Stat(l.Output); !os.IsNotExist(err) {
 			t.Errorf("%+v: log file created despite the error (stat err = %v)", l, err)
 		}
+	}
+}
+
+// INTUNE_AUTHORITY_HOST overrides the file, as the other endpoint variables do.
+func TestAuthorityHostFromEnv(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("INTUNE_AUTHORITY_HOST", "https://login.microsoftonline.us")
+	cfg, err := Load(writeConfig(t, "intune:\n  tenant_id: t\n  client_id: c\n  client_secret: s\n  authority_host: https://file.example/\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Intune.AuthorityHost != "https://login.microsoftonline.us/" {
+		t.Errorf("authority host = %q, want the env value, normalised", cfg.Intune.AuthorityHost)
 	}
 }

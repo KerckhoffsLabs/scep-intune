@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -89,17 +90,6 @@ func writeCert(t *testing.T) (certPath, keyPath string, client *http.Client) {
 	return certPath, keyPath, client
 }
 
-func freeAddr(t *testing.T) string {
-	t.Helper()
-	ln, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	addr := ln.Addr().String()
-	_ = ln.Close()
-	return addr
-}
-
 func noEnv(string) (string, bool) { return "", false }
 
 func TestRunUsageErrors(t *testing.T) {
@@ -124,43 +114,41 @@ func TestRunUsageErrors(t *testing.T) {
 			if env == nil {
 				env = noEnv
 			}
-			if code := run(t.Context(), tc.args, env, io.Discard); code != tc.want {
+			if code := run(t.Context(), tc.args, env, io.Discard, io.Discard); code != tc.want {
 				t.Fatalf("exit = %d, want %d", code, tc.want)
 			}
 		})
 	}
 }
 
+var addrPattern = regexp.MustCompile(`"addr":"([^"]+)"`)
+
 // The mock serves over TLS, logs each request, and exits 0 once its context
 // ends. Settings may come from the environment.
 func TestRunServesAndShutsDown(t *testing.T) {
 	cert, key, client := writeCert(t)
-	addr := freeAddr(t)
 	env := map[string]string{"MOCK_CERT": cert, "MOCK_KEY": key}
 	lookup := func(k string) (string, bool) { v, ok := env[k]; return v, ok }
 
 	var out syncBuffer
 	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
 	done := make(chan int, 1)
 	go func() {
-		done <- run(ctx, []string{"-listen", addr, "-base-url", "https://" + addr}, lookup, &out)
+		done <- run(ctx, []string{"-listen", "127.0.0.1:0", "-base-url", "https://intune-mock.example"}, lookup, &out, io.Discard)
 	}()
 
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, "https://"+addr+"/healthz", nil)
-		resp, err := client.Do(req)
-		if err == nil {
-			_ = resp.Body.Close()
-			if resp.StatusCode == http.StatusOK {
-				break
-			}
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("mock never became healthy: %v", err)
-		}
-		time.Sleep(20 * time.Millisecond)
+	addr := waitAddr(t, &out, done)
+	req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, "https://"+addr+"/healthz", nil)
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("GET /healthz: %v; log:\n%s", err, out.String())
 	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("/healthz: status %d", resp.StatusCode)
+	}
+
 	cancel()
 	select {
 	case code := <-done:
@@ -175,10 +163,43 @@ func TestRunServesAndShutsDown(t *testing.T) {
 	}
 }
 
+// waitAddr returns the address the mock logged as bound, failing fast with its
+// log if run exits first.
+func waitAddr(t *testing.T, out *syncBuffer, done <-chan int) string {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		select {
+		case code := <-done:
+			t.Fatalf("run exited early with %d; log:\n%s", code, out.String())
+		default:
+		}
+		if m := addrPattern.FindStringSubmatch(out.String()); m != nil {
+			return m[1]
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("the mock never logged its address; log:\n%s", out.String())
+	return ""
+}
+
+func TestRunListenFailure(t *testing.T) {
+	cert, key, _ := writeCert(t)
+	ln, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ln.Close() }()
+	args := []string{"-listen", ln.Addr().String(), "-cert", cert, "-key", key, "-base-url", "https://intune-mock.example"}
+	if code := run(t.Context(), args, noEnv, io.Discard, io.Discard); code != 1 {
+		t.Fatalf("exit = %d, want 1", code)
+	}
+}
+
 func TestRunMissingCertificate(t *testing.T) {
 	dir := t.TempDir()
-	args := []string{"-listen", freeAddr(t), "-cert", filepath.Join(dir, "no.crt"), "-key", filepath.Join(dir, "no.key"), "-base-url", "https://127.0.0.1:1"}
-	if code := run(t.Context(), args, noEnv, io.Discard); code != 1 {
+	args := []string{"-listen", "127.0.0.1:0", "-cert", filepath.Join(dir, "no.crt"), "-key", filepath.Join(dir, "no.key"), "-base-url", "https://intune-mock.example"}
+	if code := run(t.Context(), args, noEnv, io.Discard, io.Discard); code != 1 {
 		t.Fatalf("exit = %d, want 1", code)
 	}
 }
