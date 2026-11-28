@@ -1,0 +1,3 @@
+# Every path is owned by the maintainer, who is requested for review on pull requests from others
+# (Dependabot included). To enforce it, enable "Require review from Code Owners" in a main ruleset.
+* @AlexLaroche
