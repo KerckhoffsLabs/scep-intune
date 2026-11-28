@@ -1,6 +1,9 @@
 package intune
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
 
 const publicHost = "https://login.microsoftonline.com/"
 
@@ -75,5 +78,23 @@ func TestKnownMicrosoftAuthority(t *testing.T) {
 		if got := KnownMicrosoftAuthority(host); got != want {
 			t.Errorf("KnownMicrosoftAuthority(%q) = %v, want %v", host, got, want)
 		}
+	}
+}
+
+func TestNewEntraTokens(t *testing.T) {
+	t.Setenv(azureAuthorityHostEnv, "")
+	if _, err := NewEntraTokens("not a tenant!", "client", "secret", ""); err == nil {
+		t.Error("invalid tenant ID: want an error")
+	}
+	tok, err := NewEntraTokens("00000000-0000-0000-0000-000000000001", "client", "secret", "https://entra-mock.example/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A cancelled context stops the request before it leaves the process, so
+	// this checks the error path without a network.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := tok.Token(ctx, "https://graph.microsoft.com/.default"); err == nil {
+		t.Error("cancelled context: want an error")
 	}
 }

@@ -298,3 +298,57 @@ func TestRecordsCapped(t *testing.T) {
 		t.Fatalf("records = %+v, want the last 3 (t2..t4)", recs)
 	}
 }
+
+func TestTokenMalformedRequests(t *testing.T) {
+	srv, _ := newTestMock(t, Options{})
+	u := srv.URL + "/tenant/oauth2/v2.0/token"
+	form := "application/x-www-form-urlencoded"
+	for name, tc := range map[string]struct {
+		body string
+		code int
+		want string
+	}{
+		"undecodable form": {body: "grant_type=%zz", code: http.StatusBadRequest, want: "invalid_request"},
+		"body too large":   {body: "grant_type=" + strings.Repeat("x", maxBodyBytes+1), code: http.StatusRequestEntityTooLarge, want: "too large"},
+		"no scope": {
+			body: url.Values{"grant_type": {"client_credentials"}, "client_id": {"c"}, "client_secret": {"s"}}.Encode(),
+			code: http.StatusBadRequest, want: "invalid_scope",
+		},
+		"two resources": {
+			body: url.Values{"grant_type": {"client_credentials"}, "client_id": {"c"}, "client_secret": {"s"}, "scope": {"https://a/.default https://b/.default"}}.Encode(),
+			code: http.StatusBadRequest, want: "invalid_scope",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			code, b := do(t, http.MethodPost, u, "", strings.NewReader(tc.body), form)
+			if code != tc.code || !strings.Contains(string(b), tc.want) {
+				t.Fatalf("status %d body %s, want %d with %q", code, b, tc.code, tc.want)
+			}
+		})
+	}
+}
+
+func TestNotifyRejectsBadRequests(t *testing.T) {
+	srv, m := newTestMock(t, Options{})
+	u := srv.URL + "/intune/ScepActions/successNotification"
+	if code, _ := do(t, http.MethodPost, u, "mock.wrong-scope", strings.NewReader(`{}`), "application/json"); code != http.StatusUnauthorized {
+		t.Errorf("wrong token: status %d, want 401", code)
+	}
+	if code, _ := do(t, http.MethodPost, u, "mock.https://api.manage.microsoft.com/.default", strings.NewReader(`{`), "application/json"); code != http.StatusBadRequest {
+		t.Errorf("invalid JSON: status %d, want 400", code)
+	}
+	if recs := m.Records(); len(recs) != 0 {
+		t.Errorf("records = %+v, want none for rejected requests", recs)
+	}
+}
+
+func TestString(t *testing.T) {
+	_, anyID := newTestMock(t, Options{})
+	if s := anyID.String(); !strings.Contains(s, "client_id=(any)") || !strings.Contains(s, "app_id="+intuneAppID) {
+		t.Errorf("String() = %q", s)
+	}
+	_, fixed := newTestMock(t, Options{ClientID: "bridge"})
+	if s := fixed.String(); !strings.Contains(s, "client_id=bridge") {
+		t.Errorf("String() = %q", s)
+	}
+}

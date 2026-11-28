@@ -11,7 +11,9 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -40,13 +42,18 @@ func applyEnv(fs *flag.FlagSet, lookup func(string) (string, bool)) error {
 
 func main() {
 	// run returns instead of calling os.Exit, so deferred cleanup runs first.
-	os.Exit(run())
+	os.Exit(run(context.Background(), os.Args[1:], os.LookupEnv, os.Stdout, os.Stderr))
 }
 
-func run() int {
-	log := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+// run serves the mock until it fails or a shutdown signal (or the cancellation
+// of parent) stops it. args are the command-line arguments without the program
+// name, lookupEnv reads MOCK_* variables, stdout receives the log and stderr
+// the usage text.
+func run(parent context.Context, args []string, lookupEnv func(string) (string, bool), stdout, stderr io.Writer) int {
+	log := slog.New(slog.NewJSONHandler(stdout, nil))
 
-	fs := flag.NewFlagSet("intune-mock", flag.ExitOnError)
+	fs := flag.NewFlagSet("intune-mock", flag.ContinueOnError)
+	fs.SetOutput(stderr)
 	listen := fs.String("listen", ":8443", "address to listen on")
 	cert := fs.String("cert", "", "PEM certificate (required: the Azure SDK only accepts an https authority)")
 	key := fs.String("key", "", "PEM private key (required)")
@@ -59,11 +66,16 @@ func run() int {
 	maxRecords := fs.Int("max-records", 1000, "size of the /_mock/requests log; oldest entries are dropped")
 
 	// Environment first, flags override.
-	if err := applyEnv(fs, os.LookupEnv); err != nil {
+	if err := applyEnv(fs, lookupEnv); err != nil {
 		log.Error("invalid environment", "err", err)
 		return 2
 	}
-	_ = fs.Parse(os.Args[1:])
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
+		return 2
+	}
 
 	if *cert == "" || *key == "" || *baseURL == "" {
 		log.Error("-cert, -key and -base-url are required")
@@ -87,19 +99,28 @@ func run() int {
 		log.Info("request", "method", r.Method, "path", r.URL.Path)
 		m.ServeHTTP(w, r)
 	})
-	srv := &http.Server{Addr: *listen, Handler: logged, ReadHeaderTimeout: 10 * time.Second}
+	srv := &http.Server{Handler: logged, ReadHeaderTimeout: 10 * time.Second}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, stop := signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	go func() {
 		<-ctx.Done()
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		// The drain deadline must outlive ctx, which has just ended.
+		shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer cancel()
 		_ = srv.Shutdown(shutdownCtx)
 	}()
 
-	log.Info("intune-mock starting: for tests only, never point a production bridge here", "listen", *listen, "config", m.String())
-	if err := srv.ListenAndServeTLS(*cert, *key); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	// Bind before serving, so the log names the address actually bound (the
+	// port of a ":0" listen included).
+	ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", *listen)
+	if err != nil {
+		log.Error("server failed", "err", err)
+		return 1
+	}
+	log.Info("intune-mock starting: for tests only, never point a production bridge here",
+		"listen", *listen, "addr", ln.Addr().String(), "config", m.String())
+	if err := srv.ServeTLS(ln, *cert, *key); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Error("server failed", "err", err)
 		return 1
 	}

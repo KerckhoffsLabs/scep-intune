@@ -3,12 +3,15 @@ package intune
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -129,8 +132,37 @@ func TestValidateRejected(t *testing.T) {
 	srv, _ := newTestServer(t, "ChallengeExpired")
 	c := newTestClient(srv)
 	err := c.Validate(context.Background(), "txn-2", []byte("der"))
-	if err == nil || !strings.Contains(err.Error(), "ChallengeExpired") {
-		t.Fatalf("err = %v", err)
+	if !errors.Is(err, ErrRejected) || !strings.Contains(err.Error(), "ChallengeExpired") {
+		t.Fatalf("err = %v, want ErrRejected naming ChallengeExpired", err)
+	}
+}
+
+// serveValidate answers discovery with the server itself and every
+// validateRequest with status and body.
+func serveValidate(t *testing.T, status int, body string) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	var srv *httptest.Server
+	mux.HandleFunc("/v1.0/servicePrincipals/", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(discoveryResponse{Value: []endpoint{{ProviderName: validationServiceName, URI: srv.URL}}})
+	})
+	mux.HandleFunc("/"+pathValidate, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(status)
+		_, _ = io.WriteString(w, body)
+	})
+	srv = httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// Only an exact "Success" allows: a 200 without that code is a rejection,
+// never an allow.
+func TestValidateWithoutSuccessCodeIsRejected(t *testing.T) {
+	for _, body := range []string{`{}`, `null`, `{"code":""}`, `{"code":"success"}`, `{"errorDescription":"Success"}`} {
+		err := newTestClient(serveValidate(t, http.StatusOK, body)).Validate(context.Background(), "txn", []byte("der"))
+		if !errors.Is(err, ErrRejected) {
+			t.Errorf("body %s: err = %v, want ErrRejected", body, err)
+		}
 	}
 }
 
@@ -186,24 +218,15 @@ func TestNotifyFailureNon200(t *testing.T) {
 	}
 }
 
-func TestValidateTransientHTTPError(t *testing.T) {
-	mux := http.NewServeMux()
-	var srv *httptest.Server
-	mux.HandleFunc("/v1.0/servicePrincipals/", func(w http.ResponseWriter, _ *http.Request) {
-		_ = json.NewEncoder(w).Encode(discoveryResponse{Value: []endpoint{
-			{ProviderName: validationServiceName, URI: srv.URL},
-		}})
-	})
-	mux.HandleFunc("/"+pathValidate, func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusServiceUnavailable) // 503: transient, not a rejection
-	})
-	srv = httptest.NewServer(mux)
-	t.Cleanup(srv.Close)
-
-	c := newTestClient(srv)
-	err := c.Validate(context.Background(), "txn-6", []byte("der"))
-	if err == nil || !strings.Contains(err.Error(), "503") {
-		t.Fatalf("err = %v, want transient HTTP 503 error (not a rejection)", err)
+// A non-2xx reply is a transport, auth or throttling failure: an error the
+// device retries, never a rejection (which would deny it) nor an allow. The
+// body is ignored even when it looks like a success.
+func TestValidateHTTPErrorIsNotRejection(t *testing.T) {
+	for _, status := range []int{http.StatusUnauthorized, http.StatusTooManyRequests, http.StatusInternalServerError, http.StatusServiceUnavailable} {
+		err := newTestClient(serveValidate(t, status, `{"code":"Success"}`)).Validate(context.Background(), "txn", []byte("der"))
+		if err == nil || errors.Is(err, ErrRejected) || !strings.Contains(err.Error(), strconv.Itoa(status)) {
+			t.Errorf("HTTP %d: err = %v, want a non-rejection error naming the status", status, err)
+		}
 	}
 }
 
@@ -222,5 +245,137 @@ func TestDiscoveryRejectsNonHTTPSServiceURI(t *testing.T) {
 	err := c.Validate(context.Background(), "txn", []byte("der"))
 	if err == nil || !strings.Contains(err.Error(), "https") {
 		t.Fatalf("err = %v, want a refusal of the non-https service URI", err)
+	}
+}
+
+// failingTokens fails for the scope it is told to, and hands out "tok" otherwise.
+type failingTokens struct{ failScope string }
+
+func (f failingTokens) Token(_ context.Context, scope string) (string, error) {
+	if scope == f.failScope {
+		return "", errors.New("entra: invalid_client")
+	}
+	return "tok", nil
+}
+
+// Discovery runs once: later calls reuse the discovered address.
+func TestDiscoveryIsCached(t *testing.T) {
+	var discoveries atomic.Int32
+	mux := http.NewServeMux()
+	var srv *httptest.Server
+	mux.HandleFunc("/v1.0/servicePrincipals/", func(w http.ResponseWriter, _ *http.Request) {
+		discoveries.Add(1)
+		_ = json.NewEncoder(w).Encode(discoveryResponse{Value: []endpoint{{ProviderName: validationServiceName, URI: srv.URL}}})
+	})
+	mux.HandleFunc("/"+pathValidate, func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(codeResponse{Code: "Success"})
+	})
+	srv = httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	c := newTestClient(srv)
+	for range 3 {
+		if err := c.Validate(context.Background(), "txn", []byte("der")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := discoveries.Load(); n != 1 {
+		t.Fatalf("discovery called %d times, want 1", n)
+	}
+}
+
+// Every discovery failure is an error, never a rejection: the device retries.
+func TestDiscoveryFailures(t *testing.T) {
+	for name, tc := range map[string]struct {
+		handler http.HandlerFunc
+		want    string
+	}{
+		"http error": {
+			handler: func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusForbidden) },
+			want:    "discovery returned HTTP 403",
+		},
+		"invalid json": {
+			handler: func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, "{") },
+			want:    "unexpected EOF",
+		},
+		"service missing": {
+			handler: func(w http.ResponseWriter, _ *http.Request) {
+				_ = json.NewEncoder(w).Encode(discoveryResponse{Value: []endpoint{{ProviderName: "Other", URI: "https://other.example"}}})
+			},
+			want: "endpoint not found",
+		},
+		"invalid service uri": {
+			handler: func(w http.ResponseWriter, _ *http.Request) {
+				_ = json.NewEncoder(w).Encode(discoveryResponse{Value: []endpoint{{ProviderName: validationServiceName, URI: "not-a-url"}}})
+			},
+			want: "invalid " + validationServiceName + " URI",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			srv := httptest.NewServer(tc.handler)
+			t.Cleanup(srv.Close)
+			err := newTestClient(srv).Validate(context.Background(), "txn", []byte("der"))
+			if err == nil || errors.Is(err, ErrRejected) || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("err = %v, want a non-rejection error containing %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestDiscoveryUnreachable(t *testing.T) {
+	srv := httptest.NewServer(http.NotFoundHandler())
+	c := newTestClient(srv)
+	srv.Close()
+	if err := c.Validate(context.Background(), "txn", []byte("der")); err == nil || errors.Is(err, ErrRejected) {
+		t.Fatalf("err = %v, want a transport error", err)
+	}
+}
+
+func TestDiscoveryInvalidGraphURL(t *testing.T) {
+	c := New(&fakeTokens{}, "test", Endpoints{GraphURL: "https://[::1/", ResourceURL: testResourceURL, AppID: "app"})
+	if err := c.Validate(context.Background(), "txn", []byte("der")); err == nil {
+		t.Fatal("want an error for an unparsable Graph URL")
+	}
+}
+
+// A token failure for either scope stops the call before anything is sent.
+func TestTokenFailures(t *testing.T) {
+	srv, _ := newTestServer(t, "Success")
+	for _, scope := range []string{srv.URL + "/.default", testResourceURL + ".default"} {
+		c := New(failingTokens{failScope: scope}, "test", Endpoints{GraphURL: srv.URL + "/", ResourceURL: testResourceURL, AppID: "app"})
+		c.http = srv.Client()
+		if err := c.Validate(context.Background(), "txn", []byte("der")); err == nil || !strings.Contains(err.Error(), "invalid_client") {
+			t.Errorf("failing scope %s: err = %v, want the token error", scope, err)
+		}
+	}
+}
+
+// The ScepActions host going away after discovery is a transport error.
+func TestServiceUnreachable(t *testing.T) {
+	gone := httptest.NewServer(http.NotFoundHandler())
+	goneURL := gone.URL
+	gone.Close()
+	graph := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(discoveryResponse{Value: []endpoint{{ProviderName: validationServiceName, URI: goneURL}}})
+	}))
+	t.Cleanup(graph.Close)
+	if err := newTestClient(graph).Validate(context.Background(), "txn", []byte("der")); err == nil || errors.Is(err, ErrRejected) {
+		t.Fatalf("err = %v, want a transport error", err)
+	}
+}
+
+// A 200 that isn't the expected JSON is an error, not a silent allow or deny.
+func TestValidateUndecodableResponse(t *testing.T) {
+	mux := http.NewServeMux()
+	var srv *httptest.Server
+	mux.HandleFunc("/v1.0/servicePrincipals/", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(discoveryResponse{Value: []endpoint{{ProviderName: validationServiceName, URI: srv.URL}}})
+	})
+	mux.HandleFunc("/"+pathValidate, func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, "<html>") })
+	srv = httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	err := newTestClient(srv).Validate(context.Background(), "txn", []byte("der"))
+	if err == nil || errors.Is(err, ErrRejected) || !strings.Contains(err.Error(), "decode validate response") {
+		t.Fatalf("err = %v, want a decode error that is not a rejection", err)
 	}
 }

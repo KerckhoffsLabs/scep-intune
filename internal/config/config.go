@@ -243,21 +243,6 @@ func checkHTTPSURL(key, env, val string) error {
 // path, the file is opened for append (created if absent) and returned so the
 // caller controls its lifetime; for stdout/stderr the returned closer is nil.
 func (c *Config) Logger() (*slog.Logger, io.Closer, error) {
-	var w io.Writer
-	var closer io.Closer
-	switch c.Logging.Output {
-	case "stdout", "":
-		w = os.Stdout
-	case "stderr":
-		w = os.Stderr
-	default:
-		f, err := os.OpenFile(c.Logging.Output, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o640) //nolint:gosec // G302: group-readable for log shippers
-		if err != nil {
-			return nil, nil, fmt.Errorf("config: open log file %q: %w", c.Logging.Output, err)
-		}
-		w, closer = f, f
-	}
-
 	var level slog.Level
 	switch strings.ToLower(c.Logging.Level) {
 	case "debug":
@@ -273,14 +258,31 @@ func (c *Config) Logger() (*slog.Logger, io.Closer, error) {
 	}
 	opts := &slog.HandlerOptions{Level: level}
 
-	var h slog.Handler
+	var newHandler func(io.Writer, *slog.HandlerOptions) slog.Handler
 	switch strings.ToLower(c.Logging.Format) {
 	case "json", "":
-		h = slog.NewJSONHandler(w, opts)
+		newHandler = func(w io.Writer, o *slog.HandlerOptions) slog.Handler { return slog.NewJSONHandler(w, o) }
 	case "text":
-		h = slog.NewTextHandler(w, opts)
+		newHandler = func(w io.Writer, o *slog.HandlerOptions) slog.Handler { return slog.NewTextHandler(w, o) }
 	default:
 		return nil, nil, fmt.Errorf("config: invalid logging.format %q", c.Logging.Format)
 	}
-	return slog.New(h), closer, nil
+
+	// Open the file last, once the options are known to be valid, so an error
+	// never leaves it open.
+	var w io.Writer
+	var closer io.Closer
+	switch c.Logging.Output {
+	case "stdout", "":
+		w = os.Stdout
+	case "stderr":
+		w = os.Stderr
+	default:
+		f, err := os.OpenFile(c.Logging.Output, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o640) //nolint:gosec // G302: group-readable for log shippers
+		if err != nil {
+			return nil, nil, fmt.Errorf("config: open log file %q: %w", c.Logging.Output, err)
+		}
+		w, closer = f, f
+	}
+	return slog.New(newHandler(w, opts)), closer, nil
 }

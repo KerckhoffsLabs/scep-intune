@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -261,5 +262,149 @@ func TestEndpointRejectsUserinfo(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "pass") {
 		t.Fatalf("error leaks the password: %v", err)
+	}
+}
+
+func TestLoadErrors(t *testing.T) {
+	if _, err := Load(filepath.Join(t.TempDir(), "missing.yaml")); err == nil {
+		t.Error("missing file: want an error")
+	}
+	if _, err := Load(writeConfig(t, "intune: [not, a, mapping]\n")); err == nil {
+		t.Error("invalid YAML: want an error")
+	}
+}
+
+// clearEnv blanks every variable Load reads, so the environment of the
+// machine running the tests cannot change their outcome.
+func clearEnv(t *testing.T) {
+	t.Helper()
+	for _, k := range []string{
+		"INTUNE_CLIENT_SECRET", "INTUNE_TENANT_ID", "INTUNE_CLIENT_ID",
+		"SCEP_VALIDATE_SECRET", "SCEP_NOTIFY_SECRET",
+		"INTUNE_AUTHORITY_HOST", "INTUNE_GRAPH_URL", "INTUNE_RESOURCE_URL", "INTUNE_APP_ID",
+	} {
+		t.Setenv(k, "")
+	}
+}
+
+func TestEndpointRejectsUnparsableURL(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("INTUNE_GRAPH_URL", "https://[::1")
+	_, err := Load(writeConfig(t, "intune:\n  tenant_id: t\n  client_id: c\n  client_secret: s\n"))
+	if err == nil || !strings.Contains(err.Error(), "intune.graph_url") {
+		t.Fatalf("err = %v, want an error naming intune.graph_url", err)
+	}
+}
+
+// logLines builds a logger from l writing to a temp file, logs one line at
+// each of debug, info and warn, and returns the file's content.
+func logLines(t *testing.T, l Logging) string {
+	t.Helper()
+	l.Output = filepath.Join(t.TempDir(), "bridge.log")
+	log, closer, err := (&Config{Logging: l}).Logger()
+	if err != nil {
+		t.Fatalf("%+v: %v", l, err)
+	}
+	log.Debug("debug-line")
+	log.Info("info-line")
+	log.Warn("warn-line")
+	if err := closer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(l.Output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+// Each level filters what it should and each format writes what it should.
+func TestLoggerLevelsAndFormats(t *testing.T) {
+	for _, tc := range []struct {
+		level, format     string
+		debug, info, warn bool
+	}{
+		{level: "debug", format: "json", debug: true, info: true, warn: true},
+		{level: "", format: "", info: true, warn: true},
+		{level: "INFO", format: "text", info: true, warn: true},
+		{level: "warn", format: "json", warn: true},
+		{level: "warning", format: "text", warn: true},
+		{level: "error", format: "json"},
+	} {
+		out := logLines(t, Logging{Level: tc.level, Format: tc.format})
+		got := []bool{strings.Contains(out, "debug-line"), strings.Contains(out, "info-line"), strings.Contains(out, "warn-line")}
+		if want := []bool{tc.debug, tc.info, tc.warn}; !slices.Equal(got, want) {
+			t.Errorf("level %q: logged debug/info/warn = %v, want %v", tc.level, got, want)
+		}
+		if isJSON := strings.HasPrefix(out, "{"); out != "" && isJSON != (tc.format != "text") {
+			t.Errorf("format %q: output %q", tc.format, out)
+		}
+	}
+}
+
+// stdout and stderr need no closing, so Logger returns no closer for them.
+func TestLoggerConsoleOutputs(t *testing.T) {
+	for _, output := range []string{"stdout", "", "stderr"} {
+		c := &Config{Logging: Logging{Output: output}}
+		if log, closer, err := c.Logger(); err != nil || log == nil || closer != nil {
+			t.Errorf("output %q: logger=%v closer=%v err=%v, want a logger and no closer", output, log, closer, err)
+		}
+	}
+}
+
+// The log file is appended to, not truncated, so a restart keeps earlier logs.
+func TestLoggerAppends(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "bridge.log")
+	if err := os.WriteFile(path, []byte("earlier\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	log, closer, err := (&Config{Logging: Logging{Output: path}}).Logger()
+	if err != nil {
+		t.Fatal(err)
+	}
+	log.Info("later")
+	_ = closer.Close()
+	b, _ := os.ReadFile(path) //nolint:gosec // G304: the test's own temp file
+	if !strings.HasPrefix(string(b), "earlier\n") || !strings.Contains(string(b), "later") {
+		t.Fatalf("log file = %q, want the earlier line kept", b)
+	}
+}
+
+func TestLoggerErrors(t *testing.T) {
+	for name, l := range map[string]Logging{
+		"unwritable output": {Output: filepath.Join(t.TempDir(), "no-such-dir", "bridge.log")},
+		"invalid level":     {Output: "stdout", Level: "loud"},
+		"invalid format":    {Output: "stdout", Format: "xml"},
+	} {
+		if _, _, err := (&Config{Logging: l}).Logger(); err == nil {
+			t.Errorf("%s: want an error", name)
+		}
+	}
+}
+
+// An invalid level or format is reported before the log file is opened, so the
+// error never leaves a file handle open (or creates an empty file).
+func TestLoggerInvalidOptionsDoNotOpenFile(t *testing.T) {
+	for _, l := range []Logging{{Level: "loud"}, {Format: "xml"}} {
+		l.Output = filepath.Join(t.TempDir(), "bridge.log")
+		if _, closer, err := (&Config{Logging: l}).Logger(); err == nil || closer != nil {
+			t.Fatalf("%+v: closer=%v err=%v, want an error and no closer", l, closer, err)
+		}
+		if _, err := os.Stat(l.Output); !os.IsNotExist(err) {
+			t.Errorf("%+v: log file created despite the error (stat err = %v)", l, err)
+		}
+	}
+}
+
+// INTUNE_AUTHORITY_HOST overrides the file, as the other endpoint variables do.
+func TestAuthorityHostFromEnv(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("INTUNE_AUTHORITY_HOST", "https://login.microsoftonline.us")
+	cfg, err := Load(writeConfig(t, "intune:\n  tenant_id: t\n  client_id: c\n  client_secret: s\n  authority_host: https://file.example/\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Intune.AuthorityHost != "https://login.microsoftonline.us/" {
+		t.Errorf("authority host = %q, want the env value, normalised", cfg.Intune.AuthorityHost)
 	}
 }

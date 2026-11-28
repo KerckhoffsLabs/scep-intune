@@ -6,8 +6,11 @@ package main
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"flag"
+	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -22,15 +25,26 @@ import (
 func main() {
 	// run returns instead of calling os.Exit, so deferred cleanup (closing the
 	// log file) always happens.
-	os.Exit(run())
+	os.Exit(run(context.Background(), os.Args[1:], os.Stdout, os.Stderr))
 }
 
-func run() int {
-	cfgPath := flag.String("config", "config.yaml", "path to YAML config")
-	flag.Parse()
+// run starts the bridge and blocks until it fails or a shutdown signal (or the
+// cancellation of parent) drains it. args are the command-line arguments
+// without the program name; stdout receives the bootstrap log and stderr the
+// usage text.
+func run(parent context.Context, args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("scep-intune", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	cfgPath := fs.String("config", "config.yaml", "path to YAML config")
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
+		return 2
+	}
 
 	// Bootstrap logger until config (which may redirect logs to a file) loads.
-	log := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	log := slog.New(slog.NewJSONHandler(stdout, nil))
 
 	cfg, err := config.Load(*cfgPath)
 	if err != nil {
@@ -80,7 +94,7 @@ func run() int {
 			level = slog.LevelWarn
 			msg = "using non-default Microsoft endpoints: the Entra client secret is sent to a host that is not a Microsoft authority"
 		}
-		log.Log(context.Background(), level, msg,
+		log.Log(parent, level, msg,
 			"authority_host", cfg.Intune.AuthorityHost, "graph_url", cfg.Intune.GraphURL,
 			"resource_url", cfg.Intune.ResourceURL, "app_id", cfg.Intune.AppID)
 	}
@@ -96,7 +110,6 @@ func run() int {
 	// is generous because each request fans out to Intune (and, on first call,
 	// Graph discovery) before responding.
 	srv := &http.Server{
-		Addr:              cfg.Server.Listen,
 		Handler:           h,
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
@@ -104,16 +117,23 @@ func run() int {
 		IdleTimeout:       120 * time.Second,
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, stop := signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// Bind before serving, so a busy port fails here and the log names the
+	// address actually bound (the port of a ":0" listen included).
+	ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", cfg.Server.Listen)
+	if err != nil {
+		log.Error("server failed to start", "err", err)
+		return 1
+	}
+	log.Info("starting", "listen", cfg.Server.Listen, "addr", ln.Addr().String(), "tls", cfg.Server.TLS.Enabled)
 	serveErr := make(chan error, 1)
 	go func() {
-		log.Info("starting", "listen", cfg.Server.Listen, "tls", cfg.Server.TLS.Enabled)
 		if cfg.Server.TLS.Enabled {
-			serveErr <- srv.ListenAndServeTLS(cfg.Server.TLS.Cert, cfg.Server.TLS.Key)
+			serveErr <- srv.ServeTLS(ln, cfg.Server.TLS.Cert, cfg.Server.TLS.Key)
 		} else {
-			serveErr <- srv.ListenAndServe()
+			serveErr <- srv.Serve(ln)
 		}
 	}()
 
@@ -124,7 +144,8 @@ func run() int {
 	case <-ctx.Done():
 		stop() // restore default signal handling: a second signal force-quits
 		log.Info("shutdown signal received, draining in-flight requests")
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+		// The drain deadline must outlive parent, which may be what just ended.
+		shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(parent), 25*time.Second)
 		defer cancel()
 		if err := srv.Shutdown(shutdownCtx); err != nil {
 			log.Error("graceful shutdown failed", "err", err)
